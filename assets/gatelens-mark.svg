@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
+  <title id="title">GateLens mark</title>
+  <description id="description">A minimal owl face shaped like a gateway with two lens eyes.</description>
+  <rect width="128" height="128" rx="24" fill="#102729"/>
+  <path d="M27 48 18 27l28 12a48 48 0 0 1 36 0l28-12-9 21a45 45 0 0 1 8 26v30H82V84a18 18 0 0 0-36 0v20H19V74a45 45 0 0 1 8-26Z" fill="#eef8f6"/>
+  <circle cx="43" cy="61" r="17" fill="#0b7368"/><circle cx="85" cy="61" r="17" fill="#0b7368"/>
+  <circle cx="43" cy="61" r="7" fill="#eef8f6"/><circle cx="85" cy="61" r="7" fill="#eef8f6"/>
+  <path d="m64 68 9 10-9 7-9-7 9-10Z" fill="#e5a83b"/>
+</svg>
