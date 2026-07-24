@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gatelens-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gatelens
+  namespace: gatelens-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gatelens-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways", "httproutes", "referencegrants"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gatelens-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gatelens-readonly
+subjects:
+  - kind: ServiceAccount
+    name: gatelens
+    namespace: gatelens-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gatelens
+  namespace: gatelens-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: gatelens}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: gatelens}
+    spec:
+      serviceAccountName: gatelens
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: gatelens
+          image: ghcr.io/gatelens/gatelens:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: GATELENS_ADDR, value: ":8080"}
+            - {name: GATELENS_MODE, value: "kubernetes"}
+            - {name: GATELENS_CLUSTER_ID, value: "in-cluster"}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /api/v1/context, port: http}, initialDelaySeconds: 3}
+          livenessProbe: {httpGet: {path: /api/v1/context, port: http}, initialDelaySeconds: 10}
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}, readOnlyRootFilesystem: true}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gatelens
+  namespace: gatelens-system
+spec:
+  selector: {app.kubernetes.io/name: gatelens}
+  ports: [{name: http, port: 80, targetPort: http}]

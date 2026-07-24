@@ -1,0 +1,410 @@
+package kube
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+
+	"github.com/gatelens/gatelens/internal/domain"
+)
+
+var (
+	gatewaysGVR = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}
+	routesGVR   = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"}
+	grantsGVR   = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1beta1", Resource: "referencegrants"}
+)
+
+type Store struct {
+	clusterID string
+	core      kubernetes.Interface
+	dynamic   dynamic.Interface
+	mutex     sync.RWMutex
+	snapshot  snapshot
+}
+type snapshot struct {
+	context   domain.Context
+	topology  domain.Topology
+	findings  []domain.Finding
+	resources []domain.Resource
+	routes    []routeRule
+}
+type routeRule struct {
+	routeID, namespace     string
+	hostnames              []string
+	method, pathType, path string
+	backendIDs             []string
+}
+
+func NewInCluster(clusterID string) (*Store, error) {
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("create in-cluster config: %w", err)
+	}
+	return New(clusterID, config)
+}
+func New(clusterID string, config *rest.Config) (*Store, error) {
+	core, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("create Kubernetes client: %w", err)
+	}
+	dynamicClient, err := dynamic.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("create dynamic Kubernetes client: %w", err)
+	}
+	return &Store{clusterID: clusterID, core: core, dynamic: dynamicClient}, nil
+}
+
+func (s *Store) Run(ctx context.Context) error {
+	coreFactory := informers.NewSharedInformerFactory(s.core, 0)
+	dynamicFactory := newDynamicInformerFactory(s.dynamic)
+	services := coreFactory.Core().V1().Services().Informer()
+	endpoints := coreFactory.Discovery().V1().EndpointSlices().Informer()
+	namespaces := coreFactory.Core().V1().Namespaces().Informer()
+	gateways := dynamicFactory.ForResource(gatewaysGVR).Informer()
+	routes := dynamicFactory.ForResource(routesGVR).Informer()
+	grants := dynamicFactory.ForResource(grantsGVR).Informer()
+	stores := []cache.Store{services.GetStore(), endpoints.GetStore(), namespaces.GetStore(), gateways.GetStore(), routes.GetStore(), grants.GetStore()}
+	refresh := func() { s.rebuild(stores...) }
+	for _, informer := range []cache.SharedIndexInformer{services, endpoints, namespaces, gateways, routes, grants} {
+		_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: func(any) { refresh() }, UpdateFunc: func(any, any) { refresh() }, DeleteFunc: func(any) { refresh() }})
+	}
+	coreFactory.Start(ctx.Done())
+	dynamicFactory.Start(ctx.Done())
+	if !cache.WaitForCacheSync(ctx.Done(), services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, gateways.HasSynced, routes.HasSynced, grants.HasSynced) {
+		return fmt.Errorf("synchronize Kubernetes informers")
+	}
+	refresh()
+	<-ctx.Done()
+	return nil
+}
+func (s *Store) Context() domain.Context {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.snapshot.context
+}
+func (s *Store) Topology() domain.Topology {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return s.snapshot.topology
+}
+func (s *Store) Findings() []domain.Finding {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return append([]domain.Finding(nil), s.snapshot.findings...)
+}
+func (s *Store) Resources(query string) []domain.Resource {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	return filterResources(s.snapshot.resources, query)
+}
+
+func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExplanation {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	result := domain.RouteExplanation{SnapshotID: s.snapshot.topology.SnapshotID, ObservedAt: s.snapshot.topology.ObservedAt, Confidence: "medium", Outcome: "Indeterminate", Summary: "没有找到匹配的 HTTPRoute。"}
+	nodes := map[string]domain.TopologyNode{}
+	for _, n := range s.snapshot.topology.Nodes {
+		nodes[n.ID] = n
+	}
+	for _, rule := range s.snapshot.routes {
+		if request.Namespace != "" && request.Namespace != rule.namespace {
+			continue
+		}
+		if !hostMatches(request.Host, rule.hostnames) || !methodMatches(request.Method, rule.method) || !pathMatches(request.Path, rule.pathType, rule.path) {
+			continue
+		}
+		result.Steps = []domain.ExplainStep{{Hop: 1, Title: "Route 规则匹配", Detail: "命中 " + rule.namespace + "/" + nodes[rule.routeID].Name + "。", State: "passed", TargetID: rule.routeID}}
+		if len(rule.backendIDs) == 0 {
+			result.Outcome = "Unresolved"
+			result.Summary = "路由没有可解析的后端。"
+			return result
+		}
+		for _, id := range rule.backendIDs {
+			backend := nodes[id]
+			state := "passed"
+			if backend.Status == domain.StatusError {
+				state = "rejected"
+			}
+			result.Steps = append(result.Steps, domain.ExplainStep{Hop: 1, Title: "后端解析", Detail: backend.Summary, State: state, TargetID: id})
+			if backend.Status == domain.StatusHealthy {
+				result.Outcome = "Routed"
+				result.Summary = "已解析到健康后端候选。"
+				return result
+			}
+		}
+		result.Outcome = "NoHealthyBackend"
+		result.Summary = "匹配路由的后端均不可用。"
+		return result
+	}
+	return result
+}
+
+func (s *Store) rebuild(stores ...cache.Store) {
+	serviceStore, endpointStore, namespaceStore, gatewayStore, routeStore, grantStore := stores[0], stores[1], stores[2], stores[3], stores[4], stores[5]
+	now := time.Now().UTC().Format(time.RFC3339)
+	snap := snapshot{context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: []string{"gateway-api", "reference-grant", "endpointslice"}}}
+	for _, item := range namespaceStore.List() {
+		if ns, ok := item.(*corev1.Namespace); ok {
+			snap.context.Namespaces = append(snap.context.Namespaces, ns.Name)
+		}
+	}
+	sort.Strings(snap.context.Namespaces)
+	grants := collectGrants(grantStore.List())
+	services := map[string]*corev1.Service{}
+	for _, item := range serviceStore.List() {
+		if svc, ok := item.(*corev1.Service); ok {
+			services[svc.Namespace+"/"+svc.Name] = svc
+		}
+	}
+	ready, endpointsByService := endpointReadiness(endpointStore.List())
+	gateways := map[string]string{}
+	for _, item := range gatewayStore.List() {
+		obj, ok := item.(*unstructured.Unstructured)
+		if !ok {
+			continue
+		}
+		gatewayID := "gateway/" + obj.GetNamespace() + "/" + obj.GetName()
+		gateways[obj.GetNamespace()+"/"+obj.GetName()] = gatewayID
+		snap.topology.Nodes = append(snap.topology.Nodes, node(s.clusterID, gatewayID, obj, "Gateway", domain.StatusHealthy, "已发现", "Gateway API 配置对象。"))
+		listeners, _, _ := unstructured.NestedSlice(obj.Object, "spec", "listeners")
+		for _, raw := range listeners {
+			listener, _ := raw.(map[string]any)
+			name := stringValue(listener, "name", "listener")
+			id := gatewayID + "/listener/" + name
+			protocol := stringValue(listener, "protocol", "unknown")
+			port := fmt.Sprint(listener["port"])
+			hostname := stringValue(listener, "hostname", "*")
+			snap.topology.Nodes = append(snap.topology.Nodes, domain.TopologyNode{ID: id, Name: name, Kind: "Listener", Namespace: obj.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: protocol + " " + hostname + ":" + port, Conditions: []string{"Protocol=" + protocol, "Hostname=" + hostname}, Source: "Gateway.spec.listeners"})
+			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: gatewayID, To: id, Relation: "owns"})
+		}
+	}
+	for _, item := range routeStore.List() {
+		obj, ok := item.(*unstructured.Unstructured)
+		if !ok {
+			continue
+		}
+		routeID := "route/" + obj.GetNamespace() + "/" + obj.GetName()
+		hostnames, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "hostnames")
+		routeNode := node(s.clusterID, routeID, obj, "HTTPRoute", domain.StatusHealthy, "已发现", "HTTP 路由；Host: "+strings.Join(hostnames, ", "))
+		snap.topology.Nodes = append(snap.topology.Nodes, routeNode)
+		parents, _, _ := unstructured.NestedSlice(obj.Object, "spec", "parentRefs")
+		for _, raw := range parents {
+			parent, _ := raw.(map[string]any)
+			ns := stringValue(parent, "namespace", obj.GetNamespace())
+			gatewayID := gateways[ns+"/"+stringValue(parent, "name", "")]
+			if gatewayID == "" {
+				addFinding(&snap, domain.StatusError, "父 Gateway 不存在", obj.GetNamespace()+"/"+obj.GetName(), "parentRef 无法解析", routeID)
+				continue
+			}
+			section := stringValue(parent, "sectionName", "")
+			from := gatewayID
+			if section != "" {
+				from = gatewayID + "/listener/" + section
+			}
+			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: from, To: routeID, Relation: "attaches"})
+		}
+		rules, _, _ := unstructured.NestedSlice(obj.Object, "spec", "rules")
+		for _, rawRule := range rules {
+			rule, _ := rawRule.(map[string]any)
+			backendIDs := s.addBackends(&snap, obj, routeID, rule, services, ready, endpointsByService, grants)
+			matches, _ := rule["matches"].([]any)
+			if len(matches) == 0 {
+				snap.routes = append(snap.routes, routeRule{routeID: routeID, namespace: obj.GetNamespace(), hostnames: hostnames, pathType: "PathPrefix", path: "/", backendIDs: backendIDs})
+			}
+			for _, rawMatch := range matches {
+				match, _ := rawMatch.(map[string]any)
+				normalized := routeRule{routeID: routeID, namespace: obj.GetNamespace(), hostnames: hostnames, pathType: "PathPrefix", path: "/", backendIDs: backendIDs}
+				if method, ok := match["method"].(string); ok {
+					normalized.method = method
+				}
+				if path, ok := match["path"].(map[string]any); ok {
+					normalized.pathType = stringValue(path, "type", "PathPrefix")
+					normalized.path = stringValue(path, "value", "/")
+				}
+				snap.routes = append(snap.routes, normalized)
+			}
+		}
+	}
+	snap.topology.SnapshotID = snap.context.Snapshot.ID
+	snap.topology.ObservedAt = now
+	snap.resources = resourcesFromNodes(snap.topology.Nodes, snap.findings)
+	s.mutex.Lock()
+	s.snapshot = snap
+	s.mutex.Unlock()
+}
+
+func (s *Store) addBackends(snap *snapshot, obj *unstructured.Unstructured, routeID string, rule map[string]any, services map[string]*corev1.Service, ready map[string]int, endpoints map[string][]domain.TopologyNode, grants map[string]bool) []string {
+	refs, _ := rule["backendRefs"].([]any)
+	ids := []string{}
+	for _, raw := range refs {
+		ref, _ := raw.(map[string]any)
+		backendNS := stringValue(ref, "namespace", obj.GetNamespace())
+		backendName := stringValue(ref, "name", "")
+		key := backendNS + "/" + backendName
+		svc := services[key]
+		if svc == nil {
+			addFinding(snap, domain.StatusError, "后端 Service 不存在", obj.GetNamespace()+"/"+obj.GetName(), "BackendRef="+key, routeID)
+			continue
+		}
+		allowed := backendNS == obj.GetNamespace() || grants[obj.GetNamespace()+"->"+backendNS+"/"+backendName] || grants[obj.GetNamespace()+"->"+backendNS+"/*"]
+		status, text, summary := domain.StatusHealthy, "Ready", fmt.Sprintf("Service 有 %d 个 Ready Endpoint。", ready[key])
+		if !allowed {
+			status = domain.StatusError
+			text = "ReferenceGrant 缺失"
+			summary = "跨命名空间 BackendRef 未被 ReferenceGrant 允许。"
+			addFinding(snap, status, "跨命名空间引用未授权", obj.GetNamespace()+"/"+obj.GetName(), summary, routeID)
+		} else if ready[key] == 0 {
+			status = domain.StatusError
+			text = "无 Ready Endpoint"
+			summary = "Service 没有可用 Endpoint。"
+			addFinding(snap, status, "后端没有可用 Endpoint", key, "ReadyEndpoints=0", routeID)
+		}
+		backendID := "service/" + key
+		ids = append(ids, backendID)
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: backendID, Name: svc.Name, Kind: "Service", Namespace: svc.Namespace, ClusterID: s.clusterID, Status: status, StatusText: text, Summary: summary, Conditions: []string{fmt.Sprintf("ReadyEndpoints=%d", ready[key])}, Source: "v1 Service"})
+		snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: routeID, To: backendID, Relation: "routes"})
+		for _, endpoint := range endpoints[key] {
+			snap.topology.Nodes = appendUnique(snap.topology.Nodes, endpoint)
+			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: backendID, To: endpoint.ID, Relation: "selects"})
+		}
+	}
+	return ids
+}
+func node(clusterID, id string, obj *unstructured.Unstructured, kind string, status domain.Status, text, summary string) domain.TopologyNode {
+	return domain.TopologyNode{ID: id, Name: obj.GetName(), Kind: kind, Namespace: obj.GetNamespace(), ClusterID: clusterID, Status: status, StatusText: text, Summary: summary, Source: obj.GetAPIVersion() + " " + obj.GetKind()}
+}
+func stringValue(values map[string]any, key, fallback string) string {
+	if v, ok := values[key].(string); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+func appendUnique(nodes []domain.TopologyNode, node domain.TopologyNode) []domain.TopologyNode {
+	for _, existing := range nodes {
+		if existing.ID == node.ID {
+			return nodes
+		}
+	}
+	return append(nodes, node)
+}
+func endpointReadiness(items []any) (map[string]int, map[string][]domain.TopologyNode) {
+	ready := map[string]int{}
+	nodes := map[string][]domain.TopologyNode{}
+	for _, item := range items {
+		slice, ok := item.(*discoveryv1.EndpointSlice)
+		if !ok {
+			continue
+		}
+		key := slice.Namespace + "/" + slice.Labels[discoveryv1.LabelServiceName]
+		for _, endpoint := range slice.Endpoints {
+			isReady := endpoint.Conditions.Ready == nil || *endpoint.Conditions.Ready
+			status, text := domain.StatusWarning, "NotReady"
+			if isReady {
+				status = domain.StatusHealthy
+				text = "Ready"
+				ready[key]++
+			}
+			for _, address := range endpoint.Addresses {
+				id := "endpoint/" + slice.Namespace + "/" + address
+				nodes[key] = append(nodes[key], domain.TopologyNode{ID: id, Name: address, Kind: "Endpoint", Namespace: slice.Namespace, Status: status, StatusText: text, Summary: "EndpointSlice " + slice.Name + " 中的后端地址。", Conditions: []string{"Ready=" + fmt.Sprint(isReady)}, Source: "discovery.k8s.io/v1 EndpointSlice"})
+			}
+		}
+	}
+	return ready, nodes
+}
+func collectGrants(items []any) map[string]bool {
+	result := map[string]bool{}
+	for _, item := range items {
+		obj, ok := item.(*unstructured.Unstructured)
+		if !ok {
+			continue
+		}
+		from, _, _ := unstructured.NestedSlice(obj.Object, "spec", "from")
+		to, _, _ := unstructured.NestedSlice(obj.Object, "spec", "to")
+		for _, rawFrom := range from {
+			f, _ := rawFrom.(map[string]any)
+			if stringValue(f, "group", "gateway.networking.k8s.io") != "gateway.networking.k8s.io" || stringValue(f, "kind", "") != "HTTPRoute" {
+				continue
+			}
+			for _, rawTo := range to {
+				t, _ := rawTo.(map[string]any)
+				if stringValue(t, "group", "") != "" || stringValue(t, "kind", "") != "Service" {
+					continue
+				}
+				name := stringValue(t, "name", "*")
+				result[stringValue(f, "namespace", "")+"->"+obj.GetNamespace()+"/"+name] = true
+			}
+		}
+	}
+	return result
+}
+func addFinding(s *snapshot, severity domain.Status, title, resource, basis, target string) {
+	s.findings = append(s.findings, domain.Finding{ID: fmt.Sprint(len(s.findings) + 1), Severity: severity, Title: title, Resource: resource, Basis: basis, TargetID: target})
+}
+func resourcesFromNodes(nodes []domain.TopologyNode, findings []domain.Finding) []domain.Resource {
+	result := []domain.Resource{}
+	for _, n := range nodes {
+		count := 0
+		for _, f := range findings {
+			if f.TargetID == n.ID {
+				count++
+			}
+		}
+		result = append(result, domain.Resource{ID: n.ID, Kind: n.Kind, Name: n.Name, Namespace: n.Namespace, Status: n.Status, StatusText: n.StatusText, UpdatedAt: "当前快照", Findings: count})
+	}
+	return result
+}
+func filterResources(resources []domain.Resource, query string) []domain.Resource {
+	if query == "" {
+		return append([]domain.Resource(nil), resources...)
+	}
+	result := []domain.Resource{}
+	for _, r := range resources {
+		if strings.Contains(strings.ToLower(r.Kind+" "+r.Name+" "+r.Namespace), strings.ToLower(query)) {
+			result = append(result, r)
+		}
+	}
+	return result
+}
+func hostMatches(host string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return true
+	}
+	host = strings.ToLower(strings.Split(host, ":")[0])
+	for _, pattern := range patterns {
+		p := strings.ToLower(pattern)
+		if p == host {
+			return true
+		}
+		if strings.HasPrefix(p, "*.") && strings.HasSuffix(host, p[1:]) && host != p[2:] {
+			return true
+		}
+	}
+	return false
+}
+func methodMatches(actual, expected string) bool {
+	return expected == "" || strings.EqualFold(actual, expected)
+}
+func pathMatches(actual, pathType, expected string) bool {
+	switch pathType {
+	case "Exact":
+		return actual == expected
+	case "RegularExpression":
+		return false
+	default:
+		return strings.HasPrefix(actual, expected)
+	}
+}
