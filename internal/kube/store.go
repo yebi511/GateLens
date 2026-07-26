@@ -73,17 +73,19 @@ func (s *Store) Run(ctx context.Context) error {
 	services := coreFactory.Core().V1().Services().Informer()
 	endpoints := coreFactory.Discovery().V1().EndpointSlices().Informer()
 	namespaces := coreFactory.Core().V1().Namespaces().Informer()
+	ingresses := coreFactory.Networking().V1().Ingresses().Informer()
 	gateways := dynamicFactory.ForResource(gatewaysGVR).Informer()
 	routes := dynamicFactory.ForResource(routesGVR).Informer()
 	grants := dynamicFactory.ForResource(grantsGVR).Informer()
-	stores := []cache.Store{services.GetStore(), endpoints.GetStore(), namespaces.GetStore(), gateways.GetStore(), routes.GetStore(), grants.GetStore()}
+	mcpBridges := dynamicFactory.ForResource(mcpBridgesGVR).Informer()
+	stores := []cache.Store{services.GetStore(), endpoints.GetStore(), namespaces.GetStore(), gateways.GetStore(), routes.GetStore(), grants.GetStore(), ingresses.GetStore(), mcpBridges.GetStore()}
 	refresh := func() { s.rebuild(stores...) }
-	for _, informer := range []cache.SharedIndexInformer{services, endpoints, namespaces, gateways, routes, grants} {
+	for _, informer := range []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, gateways, routes, grants, mcpBridges} {
 		_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: func(any) { refresh() }, UpdateFunc: func(any, any) { refresh() }, DeleteFunc: func(any) { refresh() }})
 	}
 	coreFactory.Start(ctx.Done())
 	dynamicFactory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, gateways.HasSynced, routes.HasSynced, grants.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, ingresses.HasSynced, gateways.HasSynced, routes.HasSynced, grants.HasSynced, mcpBridges.HasSynced) {
 		return fmt.Errorf("synchronize Kubernetes informers")
 	}
 	refresh()
@@ -154,8 +156,15 @@ func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExpl
 
 func (s *Store) rebuild(stores ...cache.Store) {
 	serviceStore, endpointStore, namespaceStore, gatewayStore, routeStore, grantStore := stores[0], stores[1], stores[2], stores[3], stores[4], stores[5]
+	var ingressStore, mcpBridgeStore cache.Store
+	if len(stores) > 6 {
+		ingressStore = stores[6]
+	}
+	if len(stores) > 7 {
+		mcpBridgeStore = stores[7]
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	snap := snapshot{context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: []string{"gateway-api", "reference-grant", "endpointslice"}}}
+	snap := snapshot{context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: []string{"gateway-api", "reference-grant", "endpointslice", "higress-ingress", "higress-mcpbridge"}}}
 	for _, item := range namespaceStore.List() {
 		if ns, ok := item.(*corev1.Namespace); ok {
 			snap.context.Namespaces = append(snap.context.Namespaces, ns.Name)
@@ -237,6 +246,13 @@ func (s *Store) rebuild(stores ...cache.Store) {
 				snap.routes = append(snap.routes, normalized)
 			}
 		}
+	}
+	if ingressStore != nil && mcpBridgeStore != nil {
+		serviceRefs := map[string]*networkingService{}
+		for key, svc := range services {
+			serviceRefs[key] = &networkingService{node: domain.TopologyNode{ID: "service/" + key, Name: svc.Name, Kind: "Service", Namespace: svc.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: fmt.Sprintf("Service 有 %d 个 Ready Endpoint。", ready[key]), Conditions: []string{fmt.Sprintf("ReadyEndpoints=%d", ready[key])}, Source: "v1 Service"}, readyEndpoints: ready[key]}
+		}
+		s.addHigressResources(&snap, ingressStore.List(), mcpBridgeStore.List(), serviceRefs)
 	}
 	snap.topology.SnapshotID = snap.context.Snapshot.ID
 	snap.topology.ObservedAt = now

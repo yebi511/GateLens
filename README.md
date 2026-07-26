@@ -18,13 +18,14 @@ GateLens 以只读方式监听 Kubernetes 资源，构建带来源证据的有�
 
 - 监听单集群中的 Namespace、Service 与 EndpointSlice。
 - 动态监听 Gateway API `Gateway`、`HTTPRoute` 与 `ReferenceGrant`。
-- 展示 Gateway、Listener、Route、Service 与 Endpoint 的跨命名空间拓扑。
+- 监听 `IngressClass=higress`（含旧版 class 注解）及 Higress `McpBridge` 与 registry 配置。
+- 展示 Gateway、Listener、HTTPRoute/Ingress、Service/McpBridge 与 Endpoint/Registry 的跨命名空间拓扑。
 - 校验 ParentRef、BackendRef、ReferenceGrant 和 Ready Endpoint。
-- 根据 HTTPRoute 的 Host、Path 与 Method 对请求进行静态解释。
+- 根据 HTTPRoute 或 Higress Ingress 的 Host、Path 与 Method 对请求进行静态解释。
 - 提供资源搜索、配置健康清单和快照上下文。
 - 使用最小只读 RBAC 部署，不修改集群资源，也不代理业务请求。
 
-当前尚未实现：Higress/Istio 专有 CRD 的完整语义、多集群联邦拓扑、Trace/日志关联和实际流量确认。详见[路线图](docs/04-roadmap.md)。
+当前尚未实现：Higress/Istio 专有 CRD 的完整语义、多集群联邦拓扑、Trace/日志关联和实际流量确认。Higress Ingress 与 McpBridge 的当前支持范围见[采集设计](docs/09-higress-ingress-mcpbridge.md)，其余计划见[路线图](docs/04-roadmap.md)。
 
 ## 工作原理
 
@@ -89,6 +90,7 @@ make image IMAGE=registry.example.com/platform/gatelens:v0.1.0
 
 - 集群已安装 Gateway API CRD。
 - 当前版本读取 `gateway.networking.k8s.io/v1` 的 Gateway/HTTPRoute，以及 `v1beta1` 的 ReferenceGrant。
+- 若要采集 Higress 配置，集群还需安装 Higress `networking.higress.io/v1` McpBridge CRD。
 - 镜像已推送到集群可访问的仓库。
 
 ```bash
@@ -110,7 +112,9 @@ GateLens 的 ServiceAccount 仅拥有以下只读权限：
 | --- | --- | --- |
 | core | namespaces, services | get, list, watch |
 | discovery.k8s.io | endpointslices | get, list, watch |
+| networking.k8s.io | ingresses | get, list, watch |
 | gateway.networking.k8s.io | gateways, httproutes, referencegrants | get, list, watch |
+| networking.higress.io | mcpbridges | get, list, watch |
 
 不需要 `cluster-admin`，也没有 create、update、patch 或 delete 权限。
 
@@ -169,6 +173,7 @@ make run-demo
 - [统一领域模型与可解释路由](docs/03-domain-model.md)
 - [前端展示设计](docs/05-frontend-design.md)
 - [跨命名空间与跨集群设计](docs/06-federated-routing.md)
+- [Higress Ingress 与 McpBridge 采集设计](docs/09-higress-ingress-mcpbridge.md)
 - [架构决策记录](docs/adr/README.md)
 
 ## 安全
