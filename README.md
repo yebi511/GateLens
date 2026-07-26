@@ -23,9 +23,10 @@ GateLens 以只读方式监听 Kubernetes 资源，构建带来源证据的有�
 - 校验 ParentRef、BackendRef、ReferenceGrant 和 Ready Endpoint。
 - 根据 HTTPRoute 或 Higress Ingress 的 Host、Path 与 Method 对请求进行静态解释。
 - 提供资源搜索、配置健康清单和快照上下文。
+- 根据 GatewayClass 自动定位 Istio、Higress 或 Envoy Gateway 的 Ready Pod，通过临时 port-forward 读取 `/config_dump`，并按 Listener、Filter Chain、HTTP Filter、Route、Cluster 和 Endpoint 展示数据面配置。
 - 使用最小只读 RBAC 部署，不修改集群资源，也不代理业务请求。
 
-当前尚未实现：Higress/Istio 专有 CRD 的完整语义、多集群联邦拓扑、Trace/日志关联和实际流量确认。Higress Ingress 与 McpBridge 的当前支持范围见[采集设计](docs/09-higress-ingress-mcpbridge.md)，其余计划见[路线图](docs/04-roadmap.md)。
+当前尚未实现：Higress/Istio 专有 CRD 的完整语义、多集群联邦拓扑、Trace/日志关联和实际流量确认。Envoy 配置发现仅以 Gateway API 和 GatewayClass 为入口，Kubernetes Ingress 不作为网关运行时识别来源。Higress Ingress 与 McpBridge 的当前支持范围见[采集设计](docs/09-higress-ingress-mcpbridge.md)，其余计划见[路线图](docs/04-roadmap.md)。
 
 ## 工作原理
 
@@ -110,13 +111,15 @@ GateLens 的 ServiceAccount 仅拥有以下只读权限：
 
 | API Group | Resources | Verbs |
 | --- | --- | --- |
-| core | namespaces, services | get, list, watch |
+| core | namespaces, services, pods | get, list, watch |
+| core | pods/portforward | create |
+| apps | deployments | get, list, watch |
 | discovery.k8s.io | endpointslices | get, list, watch |
 | networking.k8s.io | ingresses | get, list, watch |
-| gateway.networking.k8s.io | gateways, httproutes, referencegrants | get, list, watch |
+| gateway.networking.k8s.io | gatewayclasses, gateways, httproutes, referencegrants | get, list, watch |
 | networking.higress.io | mcpbridges | get, list, watch |
 
-不需要 `cluster-admin`，也没有 create、update、patch 或 delete 权限。
+不需要 `cluster-admin`，也不会修改 Kubernetes 资源。`pods/portforward` 需要 `create` 子资源权限，仅用于按需建立到所选 Envoy Pod admin 端口的临时隧道。
 
 ## 配置
 

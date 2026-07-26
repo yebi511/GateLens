@@ -15,7 +15,13 @@ metadata:
   name: gatelens-readonly
 rules:
   - apiGroups: [""]
-    resources: ["namespaces", "services"]
+    resources: ["namespaces", "services", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["discovery.k8s.io"]
     resources: ["endpointslices"]
@@ -24,7 +30,7 @@ rules:
     resources: ["ingresses"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["gateways", "httproutes", "referencegrants"]
+    resources: ["gatewayclasses", "gateways", "httproutes", "referencegrants"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.higress.io"]
     resources: ["mcpbridges"]

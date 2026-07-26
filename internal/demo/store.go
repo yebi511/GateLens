@@ -1,6 +1,7 @@
 package demo
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gatelens/gatelens/internal/domain"
@@ -11,6 +12,7 @@ type Store struct {
 	topology  domain.Topology
 	findings  []domain.Finding
 	resources []domain.Resource
+	envoy     domain.EnvoyConfig
 }
 
 func NewStore() *Store {
@@ -23,6 +25,7 @@ func NewStore() *Store {
 			{ID: "excluded-endpoint", Severity: domain.StatusWarning, Title: "Endpoint 被推理池排除", Resource: "Endpoint / inference/qwen-72b-c", Basis: "readiness=false", TargetID: "endpoint-qwen-c"},
 			{ID: "unknown-filter", Severity: domain.StatusWarning, Title: "存在未支持的扩展过滤器", Resource: "HTTPRoute / inference/embeddings-v1", Basis: "higress.io/ai-cache", TargetID: "route-embeddings"},
 		},
+		envoy: envoyConfig(snapshot),
 		resources: []domain.Resource{
 			{ID: "gateway-public", Kind: "Gateway", Name: "ai-public-gateway", Namespace: "ai-platform", Status: domain.StatusHealthy, StatusText: "已接受", UpdatedAt: "2 分钟前"},
 			{ID: "route-chat", Kind: "HTTPRoute", Name: "chat-completions", Namespace: "inference", Status: domain.StatusHealthy, StatusText: "已解析", UpdatedAt: "1 分钟前"},
@@ -31,6 +34,16 @@ func NewStore() *Store {
 			{ID: "service-embedding", Kind: "Service", Name: "embedding-backend", Namespace: "inference", Status: domain.StatusError, StatusText: "无 Endpoint", UpdatedAt: "2 分钟前", Findings: 1},
 		},
 	}
+}
+
+func (s *Store) EnvoyConfig(_ context.Context, gatewayID string) (domain.EnvoyConfig, error) {
+	config := s.envoy
+	config.GatewayID = gatewayID
+	config.Controller = "higress.io/gateway-controller"
+	config.Workload = "higress-system/higress-gateway"
+	config.SampledPod = "higress-system/higress-gateway-7d8f-abcde"
+	config.ReadyReplicas = 3
+	return config, nil
 }
 
 func (s *Store) Context() domain.Context    { return s.context }
@@ -84,4 +97,43 @@ func demoNodes() []domain.TopologyNode {
 }
 func demoEdges() []domain.TopologyEdge {
 	return []domain.TopologyEdge{{From: "higress-workload", To: "gateway-public", Relation: "serves"}, {From: "gateway-public", To: "listener-https", Relation: "owns"}, {From: "listener-https", To: "route-chat", Relation: "attaches"}, {From: "listener-https", To: "route-embeddings", Relation: "attaches"}, {From: "route-chat", To: "pool-qwen", Relation: "routes"}, {From: "route-embeddings", To: "service-embedding", Relation: "routes"}, {From: "pool-qwen", To: "endpoint-qwen-a", Relation: "selects"}, {From: "pool-qwen", To: "endpoint-qwen-b", Relation: "selects"}, {From: "pool-qwen", To: "endpoint-qwen-c", Relation: "excludes"}, {From: "route-chat", To: "transit-inference", Relation: "transit", Transport: "HTTPS+mTLS"}}
+}
+
+func envoyConfig(snapshot domain.Snapshot) domain.EnvoyConfig {
+	return domain.EnvoyConfig{
+		SnapshotID: snapshot.ID,
+		ObservedAt: snapshot.ObservedAt,
+		State:      "complete",
+		Source:     "Envoy admin /config_dump",
+		Proxy:      "higress-gateway · Envoy 1.31",
+		Listeners: []domain.EnvoyListener{
+			{
+				Name: "0.0.0.0_8443", Address: "0.0.0.0", Port: 8443, Protocol: "HTTPS", Status: domain.StatusHealthy,
+				FilterChains: []domain.EnvoyFilterChain{
+					{
+						Name: "https-api", Match: "SNI: api.ai.example.com", Transport: "TLS",
+						HTTPFilters: []domain.EnvoyHTTPFilter{
+							{Name: "envoy.filters.http.cors", Type: "HTTP filter", Stage: "request", ConfigSummary: "allow_origin: https://console.ai.example.com"},
+							{Name: "envoy.filters.http.ext_proc", Type: "HTTP filter", Stage: "request", ConfigSummary: "ai-policy-check · gRPC"},
+							{Name: "envoy.filters.http.router", Type: "HTTP filter", Stage: "terminal", ConfigSummary: "routes the request to the selected cluster", Terminal: true},
+						},
+						Routes: []domain.EnvoyRoute{
+							{Name: "chat-completions", Match: "POST api.ai.example.com /v1/chat/completions", Cluster: "inference|qwen-production"},
+							{Name: "embeddings", Match: "POST api.ai.example.com /v1/embeddings", Cluster: "inference|embedding-backend"},
+						},
+					},
+					{
+						Name: "http-fallback", Match: "all non-TLS traffic", Transport: "raw_buffer",
+						HTTPFilters: []domain.EnvoyHTTPFilter{{Name: "envoy.filters.http.router", Type: "HTTP filter", Stage: "terminal", ConfigSummary: "direct response: 301 HTTPS redirect", Terminal: true}},
+						Routes:      []domain.EnvoyRoute{{Name: "redirect", Match: "GET * /", Cluster: "redirect-to-https"}},
+					},
+				},
+			},
+		},
+		Clusters: []domain.EnvoyCluster{
+			{Name: "inference|qwen-production", Type: "EDS", Discovery: "xDS / istiod", ConnectTimeout: "2s", Endpoints: []domain.EnvoyEndpoint{{Address: "10.42.3.18", Port: 8080, Status: domain.StatusHealthy, Health: "healthy", Weight: 50}, {Address: "10.42.4.22", Port: 8080, Status: domain.StatusHealthy, Health: "healthy", Weight: 50}, {Address: "10.42.7.9", Port: 8080, Status: domain.StatusWarning, Health: "warming"}}},
+			{Name: "inference|embedding-backend", Type: "EDS", Discovery: "xDS / istiod", ConnectTimeout: "2s", Endpoints: []domain.EnvoyEndpoint{{Address: "10.42.9.12", Port: 8080, Status: domain.StatusError, Health: "no healthy hosts"}}},
+			{Name: "redirect-to-https", Type: "STATIC", Discovery: "static", ConnectTimeout: "1s"},
+		},
+	}
 }

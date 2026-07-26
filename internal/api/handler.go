@@ -29,6 +29,7 @@ func NewHandler(store source.Reader) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/context", h.context)
 	mux.HandleFunc("GET /api/v1/topology", h.topology)
+	mux.HandleFunc("GET /api/v1/envoy/config", h.envoyConfig)
 	mux.HandleFunc("GET /api/v1/resources", h.resources)
 	mux.HandleFunc("GET /api/v1/health/findings", h.findings)
 	mux.HandleFunc("POST /api/v1/route-explanations", h.explain)
@@ -41,6 +42,19 @@ func (h *Handler) context(w http.ResponseWriter, _ *http.Request) {
 }
 func (h *Handler) topology(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.store.Topology())
+}
+func (h *Handler) envoyConfig(w http.ResponseWriter, r *http.Request) {
+	gatewayID := r.URL.Query().Get("gatewayID")
+	if gatewayID == "" {
+		writeError(w, http.StatusBadRequest, "gatewayID is required")
+		return
+	}
+	config, err := h.store.EnvoyConfig(r.Context(), gatewayID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, config)
 }
 func (h *Handler) resources(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.store.Resources(r.URL.Query().Get("q")))

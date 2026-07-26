@@ -21,6 +21,8 @@ func TestDemoAPI(t *testing.T) {
 	}{
 		{name: "context", method: http.MethodGet, path: "/api/v1/context", want: http.StatusOK},
 		{name: "topology", method: http.MethodGet, path: "/api/v1/topology", want: http.StatusOK},
+		{name: "envoy config", method: http.MethodGet, path: "/api/v1/envoy/config?gatewayID=gateway/ai-platform/ai-public-gateway", want: http.StatusOK},
+		{name: "envoy config requires gateway", method: http.MethodGet, path: "/api/v1/envoy/config", want: http.StatusBadRequest},
 		{name: "resources", method: http.MethodGet, path: "/api/v1/resources?q=qwen", want: http.StatusOK},
 		{name: "findings", method: http.MethodGet, path: "/api/v1/health/findings", want: http.StatusOK},
 		{name: "routed explanation", method: http.MethodPost, path: "/api/v1/route-explanations", body: `{"host":"api.ai.example.com","path":"/v1/chat/completions"}`, want: http.StatusOK},

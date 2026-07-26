@@ -22,17 +22,20 @@ import (
 )
 
 var (
-	gatewaysGVR = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}
-	routesGVR   = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"}
-	grantsGVR   = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1beta1", Resource: "referencegrants"}
+	gatewaysGVR       = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"}
+	routesGVR         = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"}
+	grantsGVR         = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1beta1", Resource: "referencegrants"}
+	gatewayClassesGVR = schema.GroupVersionResource{Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gatewayclasses"}
 )
 
 type Store struct {
-	clusterID string
-	core      kubernetes.Interface
-	dynamic   dynamic.Interface
-	mutex     sync.RWMutex
-	snapshot  snapshot
+	clusterID  string
+	core       kubernetes.Interface
+	dynamic    dynamic.Interface
+	mutex      sync.RWMutex
+	snapshot   snapshot
+	restConfig *rest.Config
+	envoyCache map[string]cachedEnvoyConfig
 }
 type snapshot struct {
 	context   domain.Context
@@ -40,6 +43,7 @@ type snapshot struct {
 	findings  []domain.Finding
 	resources []domain.Resource
 	routes    []routeRule
+	runtimes  map[string]gatewayRuntime
 }
 type routeRule struct {
 	routeID, namespace     string
@@ -64,7 +68,7 @@ func New(clusterID string, config *rest.Config) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create dynamic Kubernetes client: %w", err)
 	}
-	return &Store{clusterID: clusterID, core: core, dynamic: dynamicClient}, nil
+	return &Store{clusterID: clusterID, core: core, dynamic: dynamicClient, restConfig: rest.CopyConfig(config), envoyCache: map[string]cachedEnvoyConfig{}}, nil
 }
 
 func (s *Store) Run(ctx context.Context) error {
@@ -74,18 +78,22 @@ func (s *Store) Run(ctx context.Context) error {
 	endpoints := coreFactory.Discovery().V1().EndpointSlices().Informer()
 	namespaces := coreFactory.Core().V1().Namespaces().Informer()
 	ingresses := coreFactory.Networking().V1().Ingresses().Informer()
+	pods := coreFactory.Core().V1().Pods().Informer()
+	deployments := coreFactory.Apps().V1().Deployments().Informer()
 	gateways := dynamicFactory.ForResource(gatewaysGVR).Informer()
+	gatewayClasses := dynamicFactory.ForResource(gatewayClassesGVR).Informer()
 	routes := dynamicFactory.ForResource(routesGVR).Informer()
 	grants := dynamicFactory.ForResource(grantsGVR).Informer()
 	mcpBridges := dynamicFactory.ForResource(mcpBridgesGVR).Informer()
-	stores := []cache.Store{services.GetStore(), endpoints.GetStore(), namespaces.GetStore(), gateways.GetStore(), routes.GetStore(), grants.GetStore(), ingresses.GetStore(), mcpBridges.GetStore()}
+	stores := []cache.Store{services.GetStore(), endpoints.GetStore(), namespaces.GetStore(), gateways.GetStore(), routes.GetStore(), grants.GetStore(), ingresses.GetStore(), mcpBridges.GetStore(), gatewayClasses.GetStore(), deployments.GetStore(), pods.GetStore()}
 	refresh := func() { s.rebuild(stores...) }
-	for _, informer := range []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, gateways, routes, grants, mcpBridges} {
+	allInformers := []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, pods, deployments, gateways, gatewayClasses, routes, grants, mcpBridges}
+	for _, informer := range allInformers {
 		_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: func(any) { refresh() }, UpdateFunc: func(any, any) { refresh() }, DeleteFunc: func(any) { refresh() }})
 	}
 	coreFactory.Start(ctx.Done())
 	dynamicFactory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, ingresses.HasSynced, gateways.HasSynced, routes.HasSynced, grants.HasSynced, mcpBridges.HasSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, ingresses.HasSynced, pods.HasSynced, deployments.HasSynced, gateways.HasSynced, gatewayClasses.HasSynced, routes.HasSynced, grants.HasSynced, mcpBridges.HasSynced) {
 		return fmt.Errorf("synchronize Kubernetes informers")
 	}
 	refresh()
@@ -156,15 +164,24 @@ func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExpl
 
 func (s *Store) rebuild(stores ...cache.Store) {
 	serviceStore, endpointStore, namespaceStore, gatewayStore, routeStore, grantStore := stores[0], stores[1], stores[2], stores[3], stores[4], stores[5]
-	var ingressStore, mcpBridgeStore cache.Store
+	var ingressStore, mcpBridgeStore, gatewayClassStore, deploymentStore, podStore cache.Store
 	if len(stores) > 6 {
 		ingressStore = stores[6]
 	}
 	if len(stores) > 7 {
 		mcpBridgeStore = stores[7]
 	}
+	if len(stores) > 8 {
+		gatewayClassStore = stores[8]
+	}
+	if len(stores) > 9 {
+		deploymentStore = stores[9]
+	}
+	if len(stores) > 10 {
+		podStore = stores[10]
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	snap := snapshot{context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: []string{"gateway-api", "reference-grant", "endpointslice", "higress-ingress", "higress-mcpbridge"}}}
+	snap := snapshot{runtimes: map[string]gatewayRuntime{}, context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: []string{"gateway-api", "reference-grant", "endpointslice", "higress-ingress", "higress-mcpbridge", "envoy-auto-discovery"}}}
 	for _, item := range namespaceStore.List() {
 		if ns, ok := item.(*corev1.Namespace); ok {
 			snap.context.Namespaces = append(snap.context.Namespaces, ns.Name)
@@ -179,6 +196,10 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		}
 	}
 	ready, endpointsByService := endpointReadiness(endpointStore.List())
+	gatewayClasses := map[string]string{}
+	if gatewayClassStore != nil {
+		gatewayClasses = collectGatewayClasses(gatewayClassStore.List())
+	}
 	gateways := map[string]string{}
 	for _, item := range gatewayStore.List() {
 		obj, ok := item.(*unstructured.Unstructured)
@@ -188,6 +209,9 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		gatewayID := "gateway/" + obj.GetNamespace() + "/" + obj.GetName()
 		gateways[obj.GetNamespace()+"/"+obj.GetName()] = gatewayID
 		snap.topology.Nodes = append(snap.topology.Nodes, node(s.clusterID, gatewayID, obj, "Gateway", domain.StatusHealthy, "已发现", "Gateway API 配置对象。"))
+		if deploymentStore != nil && podStore != nil {
+			addGatewayRuntime(&snap, obj, gatewayClasses, deploymentStore, podStore)
+		}
 		listeners, _, _ := unstructured.NestedSlice(obj.Object, "spec", "listeners")
 		for _, raw := range listeners {
 			listener, _ := raw.(map[string]any)

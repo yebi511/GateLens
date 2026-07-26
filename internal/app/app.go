@@ -36,6 +36,7 @@ func ConfigFromEnv() Config {
 	}
 	return Config{Address: address, Mode: mode, ClusterID: clusterID}
 }
+
 func Run(ctx context.Context, config Config) error {
 	var reader source.Reader
 	if config.Mode == "demo" {

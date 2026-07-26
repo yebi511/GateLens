@@ -56,6 +56,73 @@ type TopologyEdge struct {
 	Transport string `json:"transport,omitempty"`
 }
 
+type EnvoyConfig struct {
+	SnapshotID    string          `json:"snapshotID"`
+	ObservedAt    string          `json:"observedAt"`
+	State         string          `json:"state"`
+	Source        string          `json:"source"`
+	Proxy         string          `json:"proxy"`
+	GatewayID     string          `json:"gatewayID,omitempty"`
+	Controller    string          `json:"controller,omitempty"`
+	Workload      string          `json:"workload,omitempty"`
+	SampledPod    string          `json:"sampledPod,omitempty"`
+	ReadyReplicas int             `json:"readyReplicas,omitempty"`
+	Listeners     []EnvoyListener `json:"listeners"`
+	Clusters      []EnvoyCluster  `json:"clusters"`
+}
+
+type EnvoyListener struct {
+	Name         string             `json:"name"`
+	Address      string             `json:"address"`
+	Port         int                `json:"port"`
+	Protocol     string             `json:"protocol"`
+	Status       Status             `json:"status"`
+	FilterChains []EnvoyFilterChain `json:"filterChains"`
+}
+
+type EnvoyFilterChain struct {
+	Name        string            `json:"name"`
+	Match       string            `json:"match"`
+	Transport   string            `json:"transport"`
+	HTTPFilters []EnvoyHTTPFilter `json:"httpFilters"`
+	Routes      []EnvoyRoute      `json:"routes"`
+}
+
+type EnvoyHTTPFilter struct {
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	Stage         string `json:"stage"`
+	ConfigSummary string `json:"configSummary"`
+	Terminal      bool   `json:"terminal"`
+}
+
+type EnvoyRoute struct {
+	Name             string                 `json:"name"`
+	Match            string                 `json:"match"`
+	Cluster          string                 `json:"cluster"`
+	WeightedClusters []EnvoyWeightedCluster `json:"weightedClusters,omitempty"`
+}
+
+type EnvoyWeightedCluster struct {
+	Name   string `json:"name"`
+	Weight int    `json:"weight"`
+}
+
+type EnvoyCluster struct {
+	Name           string          `json:"name"`
+	Type           string          `json:"type"`
+	Discovery      string          `json:"discovery"`
+	ConnectTimeout string          `json:"connectTimeout"`
+	Endpoints      []EnvoyEndpoint `json:"endpoints"`
+}
+
+type EnvoyEndpoint struct {
+	Address string `json:"address"`
+	Port    int    `json:"port"`
+	Status  Status `json:"status"`
+	Health  string `json:"health"`
+	Weight  int    `json:"weight"`
+}
 type Finding struct {
 	ID       string `json:"id"`
 	Severity Status `json:"severity"`
