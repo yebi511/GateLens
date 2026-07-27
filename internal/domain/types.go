@@ -1,5 +1,7 @@
 package domain
 
+import "encoding/json"
+
 type Status string
 
 const (
@@ -69,9 +71,11 @@ type EnvoyConfig struct {
 	ReadyReplicas int             `json:"readyReplicas,omitempty"`
 	Listeners     []EnvoyListener `json:"listeners"`
 	Clusters      []EnvoyCluster  `json:"clusters"`
+	RawConfig     json.RawMessage `json:"rawConfig,omitempty"`
 }
 
 type EnvoyListener struct {
+	ID           string             `json:"id"`
 	Name         string             `json:"name"`
 	Address      string             `json:"address"`
 	Port         int                `json:"port"`

@@ -35,7 +35,8 @@ func Fetch(ctx context.Context, client *http.Client, url, snapshotID, observedAt
 }
 
 func Parse(dump map[string]any, snapshotID, observedAt string) domain.EnvoyConfig {
-	result := domain.EnvoyConfig{SnapshotID: snapshotID, ObservedAt: observedAt, State: "complete", Source: "Envoy admin /config_dump"}
+	rawConfig, _ := json.Marshal(dump)
+	result := domain.EnvoyConfig{SnapshotID: snapshotID, ObservedAt: observedAt, State: "complete", Source: "Envoy admin /config_dump", RawConfig: rawConfig}
 	routeConfigs := map[string]map[string]any{}
 	endpointAssignments := map[string]map[string]any{}
 	for _, raw := range slice(dump, "configs") {
@@ -92,7 +93,14 @@ func parseListeners(section map[string]any, result *domain.EnvoyConfig, routeCon
 				continue
 			}
 			address := object(object(listener, "address"), "socket_address")
-			item := domain.EnvoyListener{Name: stringValue(listener, "name", "unnamed-listener"), Address: stringValue(address, "address", "0.0.0.0"), Port: intValue(address, "port_value"), Protocol: "TCP", Status: domain.StatusHealthy}
+			listenerAddress := stringValue(address, "address", "0.0.0.0")
+			listenerPort := intValue(address, "port_value")
+			listenerName := stringValue(listener, "name", stringValue(entry, "name", ""))
+			if listenerName == "" {
+				listenerName = fmt.Sprintf("unnamed-listener · %s:%d", listenerAddress, listenerPort)
+			}
+			listenerID := fmt.Sprintf("%s|%s:%d|%d", listenerName, listenerAddress, listenerPort, len(result.Listeners))
+			item := domain.EnvoyListener{ID: listenerID, Name: listenerName, Address: listenerAddress, Port: listenerPort, Protocol: "TCP", Status: domain.StatusHealthy}
 			chains := slice(listener, "filter_chains")
 			if defaultChain := object(listener, "default_filter_chain"); defaultChain != nil {
 				chains = append(chains, defaultChain)

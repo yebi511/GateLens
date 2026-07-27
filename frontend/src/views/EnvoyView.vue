@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { ArrowRight, Filter, Search, Server, Waypoints } from '@lucide/vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { ArrowRight, Braces, Check, ChevronDown, ChevronUp, Copy, Filter, ListTree, Search, Server, Waypoints } from '@lucide/vue'
 import { api } from '../api/client'
 import StatusBadge from '../components/StatusBadge.vue'
 import type { EnvoyCluster, EnvoyConfig, EnvoyListener, Topology } from '../types'
@@ -12,7 +12,13 @@ const gatewayID = ref('')
 const config = ref<EnvoyConfig | null>(null)
 const loading = ref(false)
 const search = ref('')
-const selectedListenerName = ref('')
+const selectedListenerID = ref('')
+const viewMode = ref<'parsed' | 'raw'>('parsed')
+const rawSearch = ref('')
+const rawMatchIndex = ref(-1)
+const rawEditor = ref<HTMLTextAreaElement | null>(null)
+const copied = ref(false)
+let copiedTimer: ReturnType<typeof setTimeout> | undefined
 
 const gateways = computed(() => props.topology.nodes.filter((node) =>
   node.kind === 'Gateway' && node.conditions.includes('EnvoyConfig=available'),
@@ -21,8 +27,40 @@ const listeners = computed(() => {
   const query = search.value.trim().toLowerCase()
   return (config.value?.listeners ?? []).filter((listener) => !query || JSON.stringify(listener).toLowerCase().includes(query))
 })
-const selectedListener = computed(() => listeners.value.find((listener) => listener.name === selectedListenerName.value) ?? listeners.value[0] ?? null)
+const selectedListener = computed(() => listeners.value.find((listener) => listener.id === selectedListenerID.value) ?? listeners.value[0] ?? null)
 const clusterMap = computed(() => new Map((config.value?.clusters ?? []).map((cluster) => [cluster.name, cluster])))
+const rawConfigText = computed(() => {
+  if (config.value?.rawConfig == null) return ''
+  try {
+    return JSON.stringify(config.value.rawConfig, null, 2)
+  } catch {
+    return String(config.value.rawConfig)
+  }
+})
+const rawSize = computed(() => {
+  const bytes = new Blob([rawConfigText.value]).size
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+})
+const rawMatches = computed(() => {
+  const needle = rawSearch.value.trim().toLowerCase()
+  const indexes: number[] = []
+  if (!needle) return { indexes, truncated: false }
+  const source = rawConfigText.value.toLowerCase()
+  let cursor = source.indexOf(needle)
+  while (cursor >= 0 && indexes.length < 10000) {
+    indexes.push(cursor)
+    cursor = source.indexOf(needle, cursor + Math.max(needle.length, 1))
+  }
+  return { indexes, truncated: cursor >= 0 }
+})
+const rawMatchLabel = computed(() => {
+  if (!rawSearch.value.trim()) return rawConfigText.value ? rawConfigText.value.split('\n').length + ' 行 · ' + rawSize.value : '没有原始配置'
+  if (!rawMatches.value.indexes.length) return '无匹配'
+  const total = rawMatches.value.indexes.length + (rawMatches.value.truncated ? '+' : '')
+  return (rawMatchIndex.value >= 0 ? rawMatchIndex.value + 1 + ' / ' : '') + total + ' 处'
+})
 
 watch([gateways, () => props.initialGatewayId], ([items, requested]) => {
   if (requested && items.some((item) => item.id === requested)) {
@@ -33,7 +71,10 @@ watch([gateways, () => props.initialGatewayId], ([items, requested]) => {
 }, { immediate: true })
 watch(gatewayID, loadConfig, { immediate: true })
 watch(listeners, (items) => {
-  if (!items.some((listener) => listener.name === selectedListenerName.value)) selectedListenerName.value = items[0]?.name ?? ''
+  if (!items.some((listener) => listener.id === selectedListenerID.value)) selectedListenerID.value = items[0]?.id ?? ''
+})
+watch(rawSearch, () => {
+  rawMatchIndex.value = -1
 })
 
 async function loadConfig() {
@@ -44,7 +85,9 @@ async function loadConfig() {
   loading.value = true
   try {
     config.value = await api.envoy(gatewayID.value)
-    selectedListenerName.value = config.value.listeners[0]?.name ?? ''
+    selectedListenerID.value = config.value.listeners[0]?.id ?? ''
+    rawSearch.value = ''
+    viewMode.value = 'parsed'
   } catch (error) {
     config.value = null
     emit('error', `Envoy 配置读取失败：${error instanceof Error ? error.message : '未知错误'}`)
@@ -63,6 +106,40 @@ function listenerTotals(listener: EnvoyListener) {
     routes: listener.filterChains.reduce((total, chain) => total + chain.routes.length, 0),
   }
 }
+async function moveRawMatch(direction: 1 | -1) {
+  const matches = rawMatches.value.indexes
+  if (!matches.length) return
+  rawMatchIndex.value = (rawMatchIndex.value + direction + matches.length) % matches.length
+  await nextTick()
+  const editor = rawEditor.value
+  const start = matches[rawMatchIndex.value]
+  if (!editor || start == null) return
+  editor.focus()
+  editor.setSelectionRange(start, start + rawSearch.value.trim().length)
+}
+async function copyRawConfig() {
+  if (!rawConfigText.value) return
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(rawConfigText.value)
+    } else {
+      const editor = rawEditor.value
+      if (!editor) throw new Error('clipboard unavailable')
+      editor.focus()
+      editor.select()
+      if (!document.execCommand('copy')) throw new Error('copy failed')
+    }
+    copied.value = true
+    if (copiedTimer) clearTimeout(copiedTimer)
+    copiedTimer = setTimeout(() => { copied.value = false }, 1800)
+  } catch {
+    emit('error', '无法复制原始配置，请检查浏览器剪贴板权限。')
+  }
+}
+
+onBeforeUnmount(() => {
+  if (copiedTimer) clearTimeout(copiedTimer)
+})
 </script>
 
 <template>
@@ -77,31 +154,60 @@ function listenerTotals(listener: EnvoyListener) {
       <span class="inference-badge">{{ loading ? '正在读取' : config?.proxy || '等待配置' }}</span>
     </div>
 
-    <div class="filter-bar">
+    <div class="filter-bar envoy-filter-bar">
       <label>网关
         <select v-model="gatewayID">
           <option v-if="!gateways.length" value="">没有可读取的 Envoy Gateway</option>
           <option v-for="gateway in gateways" :key="gateway.id" :value="gateway.id">{{ gateway.namespace }}/{{ gateway.name }}</option>
         </select>
       </label>
-      <label class="search-field">
-        <Search :size="15" aria-hidden="true" />
-        <input v-model="search" placeholder="Listener、Route 或 Cluster" />
-      </label>
-      <span class="filter-count">{{ listeners.length }} 个 Listener</span>
+      <div class="envoy-view-tabs" role="tablist" aria-label="Envoy 配置视图">
+        <button type="button" role="tab" :aria-selected="viewMode === 'parsed'" :class="{ active: viewMode === 'parsed' }" @click="viewMode = 'parsed'">
+          <ListTree :size="14" aria-hidden="true" />解析视图
+        </button>
+        <button type="button" role="tab" :aria-selected="viewMode === 'raw'" :class="{ active: viewMode === 'raw' }" :disabled="!rawConfigText" @click="viewMode = 'raw'">
+          <Braces :size="14" aria-hidden="true" />原始 JSON
+        </button>
+      </div>
+      <template v-if="viewMode === 'parsed'">
+        <label class="search-field envoy-search-field">
+          <Search :size="15" aria-hidden="true" />
+          <input v-model="search" placeholder="Listener、Route 或 Cluster" />
+        </label>
+        <span class="filter-count">{{ listeners.length }} 个 Listener</span>
+      </template>
+      <template v-else>
+        <label class="search-field envoy-search-field">
+          <Search :size="15" aria-hidden="true" />
+          <input v-model="rawSearch" placeholder="搜索原始配置" @keydown.enter.prevent="moveRawMatch(1)" />
+        </label>
+        <span class="raw-match-count">{{ rawMatchLabel }}</span>
+        <div class="raw-toolbar">
+          <button class="icon-button" type="button" title="上一个匹配项" :disabled="!rawMatches.indexes.length" @click="moveRawMatch(-1)">
+            <ChevronUp :size="16" aria-hidden="true" />
+          </button>
+          <button class="icon-button" type="button" title="下一个匹配项" :disabled="!rawMatches.indexes.length" @click="moveRawMatch(1)">
+            <ChevronDown :size="16" aria-hidden="true" />
+          </button>
+          <button class="icon-button" type="button" :title="copied ? '已复制' : '复制原始配置'" :disabled="!rawConfigText" @click="copyRawConfig">
+            <Check v-if="copied" :size="16" aria-hidden="true" />
+            <Copy v-else :size="16" aria-hidden="true" />
+          </button>
+        </div>
+      </template>
     </div>
 
-    <div class="envoy-workspace">
+    <div v-if="viewMode === 'parsed'" class="envoy-workspace">
       <section class="envoy-list-panel">
         <div v-if="loading" class="loading-block"><span class="spinner" />正在连接 Envoy Pod</div>
         <button
           v-for="listener in listeners"
           v-else
-          :key="listener.name"
+          :key="listener.id"
           class="envoy-list-item"
-          :class="{ selected: selectedListener?.name === listener.name }"
+          :class="{ selected: selectedListener?.id === listener.id }"
           type="button"
-          @click="selectedListenerName = listener.name"
+          @click="selectedListenerID = listener.id"
         >
           <span class="envoy-list-icon"><Waypoints :size="15" aria-hidden="true" /></span>
           <span class="envoy-list-copy">
@@ -179,5 +285,29 @@ function listenerTotals(listener: EnvoyListener) {
         </div>
       </section>
     </div>
+
+    <section v-else class="envoy-raw-panel">
+      <div class="envoy-raw-head">
+        <div>
+          <p class="eyebrow">Envoy Admin</p>
+          <h2>原始 config_dump</h2>
+        </div>
+        <span>{{ config?.source }} · {{ config?.sampledPod || '未知 Pod' }} · {{ rawSize }}</span>
+      </div>
+      <textarea
+        v-if="rawConfigText"
+        ref="rawEditor"
+        class="envoy-raw-code"
+        :value="rawConfigText"
+        readonly
+        spellcheck="false"
+        wrap="off"
+        aria-label="Envoy 原始 config dump"
+      />
+      <div v-else class="empty-detail large">
+        <Braces :size="28" aria-hidden="true" />
+        <h2>没有原始配置</h2>
+      </div>
+    </section>
   </section>
 </template>

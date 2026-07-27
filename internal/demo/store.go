@@ -99,7 +99,7 @@ func demoEdges() []domain.TopologyEdge {
 }
 
 func envoyConfig(snapshot domain.Snapshot) domain.EnvoyConfig {
-	return domain.EnvoyConfig{
+	config := domain.EnvoyConfig{
 		SnapshotID: snapshot.ID,
 		ObservedAt: snapshot.ObservedAt,
 		State:      "complete",
@@ -107,7 +107,7 @@ func envoyConfig(snapshot domain.Snapshot) domain.EnvoyConfig {
 		Proxy:      "higress-gateway · Envoy 1.31",
 		Listeners: []domain.EnvoyListener{
 			{
-				Name: "0.0.0.0_8443", Address: "0.0.0.0", Port: 8443, Protocol: "HTTPS", Status: domain.StatusHealthy,
+				ID: "0.0.0.0_8443|0.0.0.0:8443|0", Name: "0.0.0.0_8443", Address: "0.0.0.0", Port: 8443, Protocol: "HTTPS", Status: domain.StatusHealthy,
 				FilterChains: []domain.EnvoyFilterChain{
 					{
 						Name: "https-api", Match: "SNI: api.ai.example.com", Transport: "TLS",
@@ -135,4 +135,68 @@ func envoyConfig(snapshot domain.Snapshot) domain.EnvoyConfig {
 			{Name: "redirect-to-https", Type: "STATIC", Discovery: "static", ConnectTimeout: "1s"},
 		},
 	}
+	config.RawConfig = demoRawEnvoyConfig()
+	return config
+}
+
+func demoRawEnvoyConfig() []byte {
+	return []byte(`{
+  "configs": [
+    {
+      "@type": "type.googleapis.com/envoy.admin.v3.ListenersConfigDump",
+      "dynamic_listeners": [
+        {
+          "name": "0.0.0.0_8443",
+          "active_state": {
+            "listener": {
+              "name": "0.0.0.0_8443",
+              "address": {"socket_address": {"address": "0.0.0.0", "port_value": 8443}},
+              "filter_chains": [
+                {
+                  "name": "https-api",
+                  "filter_chain_match": {"server_names": ["api.ai.example.com"], "transport_protocol": "tls"},
+                  "filters": [
+                    {
+                      "name": "envoy.filters.network.http_connection_manager",
+                      "typed_config": {
+                        "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager",
+                        "stat_prefix": "https-api",
+                        "http_filters": [
+                          {"name": "envoy.filters.http.cors"},
+                          {"name": "envoy.filters.http.ext_proc"},
+                          {"name": "envoy.filters.http.router"}
+                        ],
+                        "route_config": {
+                          "name": "https-api-routes",
+                          "virtual_hosts": [
+                            {
+                              "name": "api.ai.example.com",
+                              "domains": ["api.ai.example.com"],
+                              "routes": [
+                                {"name": "chat-completions", "match": {"prefix": "/v1/chat/completions"}, "route": {"cluster": "inference|qwen-production"}},
+                                {"name": "embeddings", "match": {"prefix": "/v1/embeddings"}, "route": {"cluster": "inference|embedding-backend"}}
+                              ]
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "@type": "type.googleapis.com/envoy.admin.v3.ClustersConfigDump",
+      "dynamic_active_clusters": [
+        {"cluster": {"name": "inference|qwen-production", "type": "EDS", "connect_timeout": "2s"}},
+        {"cluster": {"name": "inference|embedding-backend", "type": "EDS", "connect_timeout": "2s"}},
+        {"cluster": {"name": "redirect-to-https", "type": "STATIC", "connect_timeout": "1s"}}
+      ]
+    }
+  ]
+}`)
 }

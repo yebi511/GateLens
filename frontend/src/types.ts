@@ -78,6 +78,7 @@ export interface EnvoyFilterChain {
   routes: EnvoyRoute[]
 }
 export interface EnvoyListener {
+  id: string
   name: string
   address: string
   port: number
@@ -98,6 +99,7 @@ export interface EnvoyConfig {
   readyReplicas?: number
   listeners: EnvoyListener[]
   clusters: EnvoyCluster[]
+  rawConfig?: unknown
 }
 export interface RouteExplanationRequest {
   snapshotID: string

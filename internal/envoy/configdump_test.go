@@ -1,6 +1,7 @@
 package envoy
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/gatelens/gatelens/internal/domain"
@@ -21,6 +22,9 @@ func TestParseConfigDump(t *testing.T) {
 		map[string]any{"dynamic_active_clusters": []any{map[string]any{"cluster": cluster}}},
 	}}
 	result := Parse(dump, "snap-1", "2026-07-26T00:00:00Z")
+	if len(result.RawConfig) == 0 || !json.Valid(result.RawConfig) {
+		t.Fatalf("rawConfig is not valid JSON: %s", result.RawConfig)
+	}
 	if len(result.Listeners) != 1 || len(result.Clusters) != 1 {
 		t.Fatalf("listeners=%d clusters=%d", len(result.Listeners), len(result.Clusters))
 	}
@@ -30,6 +34,37 @@ func TestParseConfigDump(t *testing.T) {
 	}
 	if result.Clusters[0].Endpoints[0].Status != domain.StatusHealthy {
 		t.Fatalf("endpoint=%#v", result.Clusters[0].Endpoints[0])
+	}
+}
+
+func TestParseUnnamedListenersHaveDistinctIdentity(t *testing.T) {
+	listener := func(port float64) map[string]any {
+		return map[string]any{
+			"address": map[string]any{
+				"socket_address": map[string]any{"address": "0.0.0.0", "port_value": port},
+			},
+		}
+	}
+	dump := map[string]any{"configs": []any{
+		map[string]any{"static_listeners": []any{
+			map[string]any{"listener": listener(8080)},
+			map[string]any{"listener": listener(8443)},
+		}},
+	}}
+
+	result := Parse(dump, "snap-unnamed", "2026-07-27T00:00:00Z")
+	if len(result.Listeners) != 2 {
+		t.Fatalf("listeners=%d, want 2", len(result.Listeners))
+	}
+	first, second := result.Listeners[0], result.Listeners[1]
+	if first.ID == second.ID {
+		t.Fatalf("listener IDs must be unique: %q", first.ID)
+	}
+	if first.Name != "unnamed-listener · 0.0.0.0:8080" || second.Name != "unnamed-listener · 0.0.0.0:8443" {
+		t.Fatalf("listener names=%q, %q", first.Name, second.Name)
+	}
+	if first.Port != 8080 || second.Port != 8443 {
+		t.Fatalf("listener ports=%d, %d", first.Port, second.Port)
 	}
 }
 
