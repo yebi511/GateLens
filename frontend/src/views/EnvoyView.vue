@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import StatusBadge from '../components/StatusBadge.vue'
 import type { EnvoyCluster, EnvoyConfig, EnvoyListener, Topology } from '../types'
 
-const props = defineProps<{ topology: Topology }>()
+const props = defineProps<{ topology: Topology; initialGatewayId?: string }>()
 const emit = defineEmits<{ error: [message: string] }>()
 
 const gatewayID = ref('')
@@ -14,12 +14,9 @@ const loading = ref(false)
 const search = ref('')
 const selectedListenerName = ref('')
 
-const runtimeGatewayIDs = computed(() => new Set(
-  props.topology.edges
-    .filter((edge) => edge.relation === 'serves' && props.topology.nodes.some((node) => node.id === edge.from && node.kind === 'GatewayWorkload'))
-    .map((edge) => edge.to),
+const gateways = computed(() => props.topology.nodes.filter((node) =>
+  node.kind === 'Gateway' && node.conditions.includes('EnvoyConfig=available'),
 ))
-const gateways = computed(() => props.topology.nodes.filter((node) => node.kind === 'Gateway' && runtimeGatewayIDs.value.has(node.id)))
 const listeners = computed(() => {
   const query = search.value.trim().toLowerCase()
   return (config.value?.listeners ?? []).filter((listener) => !query || JSON.stringify(listener).toLowerCase().includes(query))
@@ -27,8 +24,12 @@ const listeners = computed(() => {
 const selectedListener = computed(() => listeners.value.find((listener) => listener.name === selectedListenerName.value) ?? listeners.value[0] ?? null)
 const clusterMap = computed(() => new Map((config.value?.clusters ?? []).map((cluster) => [cluster.name, cluster])))
 
-watch(gateways, (items) => {
-  if (!gatewayID.value && items[0]) gatewayID.value = items[0].id
+watch([gateways, () => props.initialGatewayId], ([items, requested]) => {
+  if (requested && items.some((item) => item.id === requested)) {
+    gatewayID.value = requested
+  } else if (!items.some((item) => item.id === gatewayID.value)) {
+    gatewayID.value = items[0]?.id ?? ''
+  }
 }, { immediate: true })
 watch(gatewayID, loadConfig, { immediate: true })
 watch(listeners, (items) => {

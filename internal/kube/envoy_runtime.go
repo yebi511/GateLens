@@ -165,10 +165,13 @@ func proxyContainer(pod *corev1.Pod, kind string) string {
 		if kind == "istio" && (container.Name == "istio-proxy" || strings.Contains(identity, "proxyv2")) {
 			return container.Name
 		}
-		if kind == "higress" && strings.Contains(identity, "higress") && strings.Contains(identity, "gateway") {
-			return container.Name
+		if kind == "higress" {
+			name := strings.ToLower(container.Name)
+			if name == "higress-gateway" || (strings.Contains(identity, "higress") && strings.Contains(identity, "gateway")) {
+				return container.Name
+			}
 		}
-		if kind == "envoy" && strings.Contains(identity, "envoy") {
+		if kind == "envoy" && (container.Name == "envoy" || strings.Contains(strings.ToLower(container.Image), "envoyproxy/envoy")) {
 			return container.Name
 		}
 	}
@@ -223,16 +226,158 @@ func matchingDeployment(pod *corev1.Pod, items []any) *appsv1.Deployment {
 	return matches[0]
 }
 
+func isStandaloneHigressGateway(deployment *appsv1.Deployment, pod *corev1.Pod) bool {
+	for _, value := range []string{
+		deployment.Name,
+		deployment.Labels["app"],
+		deployment.Labels["app.kubernetes.io/name"],
+		deployment.Labels["app.kubernetes.io/component"],
+		pod.Labels["app"],
+		pod.Labels["app.kubernetes.io/name"],
+		pod.Labels["app.kubernetes.io/component"],
+	} {
+		switch strings.ToLower(value) {
+		case "higress-gateway":
+			return true
+		}
+	}
+	return false
+}
+
+func standaloneGatewayKind(deployment *appsv1.Deployment, pod *corev1.Pod) string {
+	if isStandaloneHigressGateway(deployment, pod) && proxyContainer(pod, "higress") != "" {
+		return "higress"
+	}
+
+	parts := []string{
+		deployment.Name,
+		deployment.Labels["app"],
+		deployment.Labels["app.kubernetes.io/name"],
+		deployment.Labels["app.kubernetes.io/component"],
+		pod.Name,
+		pod.Labels["app"],
+		pod.Labels["app.kubernetes.io/name"],
+		pod.Labels["app.kubernetes.io/component"],
+		pod.Labels["gateway.networking.k8s.io/gateway-name"],
+	}
+	for _, container := range pod.Spec.Containers {
+		parts = append(parts, container.Name, container.Image)
+	}
+	identity := strings.ToLower(strings.Join(parts, " "))
+	for _, kind := range []string{"istio", "envoy"} {
+		if proxyContainer(pod, kind) == "" {
+			continue
+		}
+		if strings.Contains(identity, kind) && strings.Contains(identity, "gateway") {
+			return kind
+		}
+	}
+	return ""
+}
+
+func inferredController(kind string) string {
+	switch kind {
+	case "higress":
+		return "higress.io/gateway-controller"
+	case "istio":
+		return "istio.io/gateway-controller"
+	case "envoy":
+		return "gateway.envoyproxy.io/gatewayclass-controller"
+	default:
+		return ""
+	}
+}
+
+func gatewayRuntimeConditions(runtime gatewayRuntime) []string {
+	return []string{
+		"EnvoyConfig=available",
+		"Controller=" + runtime.Controller,
+		"Workload=" + runtime.Namespace + "/" + runtime.WorkloadName,
+		fmt.Sprintf("ReadyReplicas=%d", len(runtime.Pods)),
+	}
+}
+
+func addStandaloneGatewayRuntimes(snap *snapshot, deployments, pods cache.Store) {
+	claimed := map[string]struct{}{}
+	for _, runtime := range snap.runtimes {
+		claimed[runtime.WorkloadID] = struct{}{}
+	}
+
+	deploymentItems := append([]any(nil), deployments.List()...)
+	sort.Slice(deploymentItems, func(i, j int) bool {
+		left, leftOK := deploymentItems[i].(*appsv1.Deployment)
+		right, rightOK := deploymentItems[j].(*appsv1.Deployment)
+		if !leftOK || !rightOK {
+			return leftOK
+		}
+		return left.Namespace+"/"+left.Name < right.Namespace+"/"+right.Name
+	})
+	for _, item := range deploymentItems {
+		deployment, ok := item.(*appsv1.Deployment)
+		if !ok || deployment.Spec.Selector == nil {
+			continue
+		}
+		workloadID := "gateway-workload/" + deployment.Namespace + "/" + deployment.Name
+		if _, found := claimed[workloadID]; found {
+			continue
+		}
+		selector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
+		if err != nil {
+			continue
+		}
+		kind := ""
+		var selected []*corev1.Pod
+		for _, podItem := range pods.List() {
+			pod, ok := podItem.(*corev1.Pod)
+			if !ok || pod.Namespace != deployment.Namespace || !podReady(pod) || !selector.Matches(labels.Set(pod.Labels)) {
+				continue
+			}
+			podKind := standaloneGatewayKind(deployment, pod)
+			if podKind == "" || (kind != "" && podKind != kind) {
+				continue
+			}
+			kind = podKind
+			selected = append(selected, pod)
+		}
+		if kind == "" || len(selected) == 0 {
+			continue
+		}
+		sort.Slice(selected, func(i, j int) bool { return selected[i].Name < selected[j].Name })
+		runtime := gatewayRuntime{
+			GatewayID:    "gateway-runtime/" + deployment.Namespace + "/" + deployment.Name,
+			Controller:   inferredController(kind),
+			WorkloadID:   workloadID,
+			WorkloadName: deployment.Name,
+			Namespace:    deployment.Namespace,
+		}
+		for _, pod := range selected {
+			container := proxyContainer(pod, kind)
+			runtime.Pods = append(runtime.Pods, proxyPod{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID, Container: container, AdminPort: proxyAdminPort(pod, container, kind)})
+		}
+		snap.runtimes[runtime.GatewayID] = runtime
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
+			ID: runtime.GatewayID, Name: runtime.WorkloadName, Kind: "Gateway", Namespace: runtime.Namespace,
+			ClusterID: snap.context.Cluster.ID, Status: domain.StatusHealthy, StatusText: fmt.Sprintf("%d Ready", len(runtime.Pods)),
+			Summary: "根据 Deployment 和 Ready Pod 自动识别的数据面网关。", Conditions: gatewayRuntimeConditions(runtime),
+			Source: "apps/v1 Deployment / v1 Pod", WorkloadScope: runtime.Namespace,
+		})
+	}
+}
 func addGatewayRuntime(snap *snapshot, gateway *unstructured.Unstructured, classes map[string]string, deployments, pods cache.Store) {
 	runtime, ok := resolveGatewayRuntime(gateway, classes, deployments.List(), pods.List())
 	if !ok {
 		return
 	}
 	snap.runtimes[runtime.GatewayID] = runtime
-	snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: runtime.WorkloadID, Name: runtime.WorkloadName, Kind: "GatewayWorkload", Namespace: runtime.Namespace, ClusterID: snap.context.Cluster.ID, Status: domain.StatusHealthy, StatusText: fmt.Sprintf("%d Ready", len(runtime.Pods)), Summary: "Envoy 数据面工作负载，由 " + runtime.Controller + " 管理。", Conditions: []string{"Controller=" + runtime.Controller, fmt.Sprintf("ReadyReplicas=%d", len(runtime.Pods))}, Source: "apps/v1 Deployment / v1 Pod"})
-	snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: runtime.WorkloadID, To: runtime.GatewayID, Relation: "serves"})
+	for index := range snap.topology.Nodes {
+		node := &snap.topology.Nodes[index]
+		if node.ID != runtime.GatewayID {
+			continue
+		}
+		node.Conditions = append(node.Conditions, gatewayRuntimeConditions(runtime)...)
+		break
+	}
 }
-
 func (s *Store) EnvoyConfig(ctx context.Context, gatewayID string) (domain.EnvoyConfig, error) {
 	s.mutex.RLock()
 	runtime, ok := s.snapshot.runtimes[gatewayID]

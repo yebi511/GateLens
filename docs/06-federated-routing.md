@@ -63,7 +63,7 @@ flowchart LR
 | --- | --- | --- |
 | `ClusterIdentity` | id, displayName, environment, connectionState | 稳定标识一个集群 |
 | `NamespaceScope` | clusterID, namespace | 避免只用 namespace 字符串识别对象 |
-| `GatewayWorkload` | clusterID, namespace, workloadRef, controller | 表示数据面工作负载位置 |
+| Gateway 运行时元数据 | gatewayID, workloadRef, controller, readyReplicas | 合并到对应 Gateway；没有 Gateway API 对象时由 Deployment/Pod 生成规范化 Gateway 节点 |
 | `TransitHop` | id, from, target, transport, destination, evidence, state | 表示集群内外的显式转发边界 |
 | `ClusterLink` | fromCluster, toCluster, discoveryMode, trustState | 声明两个集群的已知连接关系 |
 | `FederatedSnapshot` | id, snapshotsByCluster, capturedAt, consistency | 保存一个跨集群查询所使用的快照集合 |

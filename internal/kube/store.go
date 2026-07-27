@@ -224,6 +224,9 @@ func (s *Store) rebuild(stores ...cache.Store) {
 			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: gatewayID, To: id, Relation: "owns"})
 		}
 	}
+	if deploymentStore != nil && podStore != nil {
+		addStandaloneGatewayRuntimes(&snap, deploymentStore, podStore)
+	}
 	for _, item := range routeStore.List() {
 		obj, ok := item.(*unstructured.Unstructured)
 		if !ok {

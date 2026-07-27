@@ -15,7 +15,7 @@
 | 类型 | 目的 |
 | --- | --- |
 | `ClusterIdentity` + `NamespaceScope` | 以 `clusterID + namespace` 唯一定位对象 |
-| `GatewayWorkload` | 区分 Higress/Istio 工作负载位置与配置对象位置 |
+| Gateway 运行时元数据 | 合并到对应 Gateway；没有 Gateway API 对象时由 Higress/Istio Deployment 生成规范化 Gateway 节点 |
 | `TransitHop` | 表达跨集群或外部上游传输边界 |
 | `ClusterLink` | 记录已知集群连接及其发现、信任状态 |
 | `FederatedSnapshot` | 固定一次多跳解释使用的各集群快照和一致性 |

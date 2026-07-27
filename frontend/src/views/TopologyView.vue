@@ -21,14 +21,14 @@ const props = defineProps<{
   namespace: string
   focusNodeId?: string
 }>()
-const emit = defineEmits<{ navigate: [view: ViewID] }>()
+const emit = defineEmits<{ navigate: [view: ViewID]; openEnvoy: [gatewayID: string] }>()
 
 const search = ref('')
 const problemsOnly = ref(false)
 const selectedID = ref('')
 
 const groups = [
-  { title: '网关', kinds: ['Gateway', 'GatewayWorkload'] },
+  { title: '网关', kinds: ['Gateway'] },
   { title: '监听器', kinds: ['Listener'] },
   { title: '路由', kinds: ['HTTPRoute', 'Ingress'] },
   { title: '后端', kinds: ['InferencePool', 'Service', 'McpBridge'] },
@@ -36,7 +36,6 @@ const groups = [
 ]
 const icons: Record<string, Component> = {
   Gateway: Waypoints,
-  GatewayWorkload: CloudCog,
   Listener: CircleDot,
   HTTPRoute: GitBranch,
   Ingress: GitBranch,
@@ -62,12 +61,9 @@ const outgoing = computed(() => props.topology.edges.filter((edge) => edge.from 
 const nodeName = (id: string) => props.topology.nodes.find((node) => node.id === id)?.name ?? id
 const nodeIcon = (kind: string) => icons[kind] ?? Box
 const nodesIn = (kinds: string[]) => visibleNodes.value.filter((node) => kinds.includes(node.kind))
-const hasEnvoyRuntime = computed(() => {
-  if (selected.value?.kind !== 'Gateway') return false
-  return incoming.value.some((edge) =>
-    edge.relation === 'serves' && props.topology.nodes.some((node) => node.id === edge.from && node.kind === 'GatewayWorkload'),
-  )
-})
+const hasEnvoyRuntime = computed(() =>
+  selected.value?.kind === 'Gateway' && selected.value.conditions.includes('EnvoyConfig=available'),
+)
 
 watch(
   () => props.focusNodeId,
@@ -158,7 +154,7 @@ function selectNode(node: TopologyNode) {
             <h3>来源</h3>
             <p>{{ selected.source }}</p>
           </section>
-          <button v-if="hasEnvoyRuntime" class="primary-button full-button" type="button" @click="emit('navigate', 'envoy')">
+          <button v-if="hasEnvoyRuntime" class="primary-button full-button" type="button" @click="emit('openEnvoy', selected.id)">
             查看 Envoy 配置
           </button>
         </template>

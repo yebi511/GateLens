@@ -49,6 +49,11 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	requireNode(t, store.Topology(), "Ingress", "mcp-api")
 	requireNode(t, store.Topology(), "McpBridge", "github-bridge")
 	requireNode(t, store.Topology(), "Registry", "github")
+	for _, node := range store.Topology().Nodes {
+		if node.Kind == "GatewayWorkload" {
+			t.Fatalf("Ingress compatibility must not create a GatewayWorkload node: %#v", node)
+		}
+	}
 	if !hasEdge(store.Topology(), "ingress/higress-system/mcp-api", "mcpbridge/higress-system/github-bridge/registry/github", "selects") {
 		t.Fatalf("expected Ingress destination to select McpBridge registry: %#v", store.Topology().Edges)
 	}

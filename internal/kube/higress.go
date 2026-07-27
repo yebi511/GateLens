@@ -47,16 +47,13 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 		}
 	}
 
-	classID := "higress/ingress-class"
 	for _, item := range ingressItems {
 		ingress, ok := item.(*networkingv1.Ingress)
 		if !ok || !isHigressIngress(ingress) {
 			continue
 		}
-		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: classID, Name: "higress", Kind: "GatewayWorkload", Namespace: "", ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "监听中", Summary: "Higress IngressClass 入口。", Source: "networking.k8s.io/v1 IngressClass"})
 		ingressID := "ingress/" + ingress.Namespace + "/" + ingress.Name
 		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: ingressID, Name: ingress.Name, Kind: "Ingress", Namespace: ingress.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: "Higress Ingress 路由。", Conditions: annotationConditions(ingress.Annotations), Source: "networking.k8s.io/v1 Ingress"})
-		snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: classID, To: ingressID, Relation: "attaches"})
 		for _, rule := range ingress.Spec.Rules {
 			if rule.HTTP == nil {
 				continue
