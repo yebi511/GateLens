@@ -27,6 +27,9 @@ func TestDemoAPI(t *testing.T) {
 		{name: "findings", method: http.MethodGet, path: "/api/v1/health/findings", want: http.StatusOK},
 		{name: "routed explanation", method: http.MethodPost, path: "/api/v1/route-explanations", body: `{"host":"api.ai.example.com","path":"/v1/chat/completions"}`, want: http.StatusOK},
 		{name: "invalid explanation", method: http.MethodPost, path: "/api/v1/route-explanations", body: `{}`, want: http.StatusBadRequest},
+		{name: "health", method: http.MethodGet, path: "/healthz", want: http.StatusOK},
+		{name: "frontend is not served", method: http.MethodGet, path: "/", want: http.StatusNotFound},
+		{name: "static asset is not served", method: http.MethodGet, path: "/app.js", want: http.StatusNotFound},
 	}
 
 	for _, test := range tests {
@@ -42,4 +45,38 @@ func TestDemoAPI(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCORS(t *testing.T) {
+	handler := NewHandler(demo.NewStore(), WithAllowedOrigins("http://localhost:5173"))
+
+	t.Run("allowed origin", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/context", nil)
+		request.Header.Set("Origin", "http://localhost:5173")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if got := response.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+			t.Fatalf("Access-Control-Allow-Origin = %q", got)
+		}
+	})
+
+	t.Run("preflight", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodOptions, "/api/v1/context", nil)
+		request.Header.Set("Origin", "http://localhost:5173")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+		}
+	})
+
+	t.Run("unknown origin", func(t *testing.T) {
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/context", nil)
+		request.Header.Set("Origin", "https://untrusted.example")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("Access-Control-Allow-Origin = %q, want empty", got)
+		}
+	})
 }

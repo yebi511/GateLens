@@ -16,9 +16,10 @@ import (
 )
 
 type Config struct {
-	Address   string
-	Mode      string
-	ClusterID string
+	Address        string
+	Mode           string
+	ClusterID      string
+	AllowedOrigins []string
 }
 
 func ConfigFromEnv() Config {
@@ -34,7 +35,8 @@ func ConfigFromEnv() Config {
 	if clusterID == "" {
 		clusterID = "in-cluster"
 	}
-	return Config{Address: address, Mode: mode, ClusterID: clusterID}
+	allowedOrigins := splitCommaSeparated(os.Getenv("GATELENS_ALLOWED_ORIGINS"))
+	return Config{Address: address, Mode: mode, ClusterID: clusterID, AllowedOrigins: allowedOrigins}
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -49,10 +51,14 @@ func Run(ctx context.Context, config Config) error {
 		reader = store
 		go func() { _ = store.Run(ctx) }()
 	}
-	server := &http.Server{Addr: config.Address, Handler: api.NewHandler(reader), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Addr:              config.Address,
+		Handler:           api.NewHandler(reader, api.WithAllowedOrigins(config.AllowedOrigins...)),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	errorsCh := make(chan error, 1)
 	go func() { errorsCh <- server.ListenAndServe() }()
-	fmt.Printf("GateLens is available at http://localhost%s (mode: %s)\n", config.Address, config.Mode)
+	fmt.Printf("GateLens API is available at %s (mode: %s)\n", displayAddress(config.Address), config.Mode)
 	select {
 	case err := <-errorsCh:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -64,4 +70,21 @@ func Run(ctx context.Context, config Config) error {
 		defer cancel()
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+func displayAddress(address string) string {
+	if strings.HasPrefix(address, ":") {
+		return "http://localhost" + address
+	}
+	return "http://" + address
+}
+
+func splitCommaSeparated(value string) []string {
+	var values []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
 }

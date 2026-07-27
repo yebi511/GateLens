@@ -1,10 +1,8 @@
 package api
 
 import (
-	"embed"
 	"encoding/json"
 	"io"
-	"io/fs"
 	"net/http"
 	"strings"
 
@@ -12,31 +10,52 @@ import (
 	"github.com/gatelens/gatelens/internal/source"
 )
 
-//go:embed all:web
-var assets embed.FS
-
 type Handler struct {
-	store  source.Reader
-	static http.Handler
+	store          source.Reader
+	allowedOrigins map[string]struct{}
 }
 
-func NewHandler(store source.Reader) http.Handler {
-	staticFiles, err := fs.Sub(assets, "web")
-	if err != nil {
-		panic(err)
+type Option func(*Handler)
+
+func WithAllowedOrigins(origins ...string) Option {
+	return func(h *Handler) {
+		for _, origin := range origins {
+			origin = strings.TrimSpace(origin)
+			if origin != "" {
+				h.allowedOrigins[origin] = struct{}{}
+			}
+		}
 	}
-	h := &Handler{store: store, static: http.FileServer(http.FS(staticFiles))}
+}
+
+func NewHandler(store source.Reader, options ...Option) http.Handler {
+	h := &Handler{store: store, allowedOrigins: make(map[string]struct{})}
+	for _, option := range options {
+		option(h)
+	}
+
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", h.health)
+	mux.HandleFunc("OPTIONS /api/", h.preflight)
 	mux.HandleFunc("GET /api/v1/context", h.context)
 	mux.HandleFunc("GET /api/v1/topology", h.topology)
 	mux.HandleFunc("GET /api/v1/envoy/config", h.envoyConfig)
 	mux.HandleFunc("GET /api/v1/resources", h.resources)
 	mux.HandleFunc("GET /api/v1/health/findings", h.findings)
 	mux.HandleFunc("POST /api/v1/route-explanations", h.explain)
-	mux.Handle("/", h.static)
-	return logging(mux)
+	mux.HandleFunc("/", h.notFound)
+	return logging(cors(mux, h.allowedOrigins))
 }
 
+func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+func (h *Handler) preflight(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+func (h *Handler) notFound(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusNotFound, "not found")
+}
 func (h *Handler) context(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.store.Context())
 }
@@ -85,8 +104,23 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/healthz" {
 			w.Header().Set("Cache-Control", "no-store")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+func cors(next http.Handler, allowedOrigins map[string]struct{}) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			w.Header().Add("Vary", "Origin")
+		}
+		if _, allowed := allowedOrigins[origin]; origin != "" && allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Vary", "Origin")
 		}
 		next.ServeHTTP(w, r)
 	})

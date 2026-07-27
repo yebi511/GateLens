@@ -15,7 +15,7 @@ flowchart LR
   GRAPH --> API[GateLens API]
   EXP --> API
   EVID --> API
-  API --> UI[Web UI]
+  API --> UI[独立 Vue Web UI]
   NORM --> DB[(元数据与快照存储)]
   EVID --> DB
 ```
@@ -50,6 +50,11 @@ flowchart LR
 4. 用户请求固定到一个快照，解释器产生 `RouteExplanation`。
 5. 证据先按 trace/request ID 关联，再按时间窗和标签弱关联；弱关联明确标为近似。
 
+## Web 与 API 边界
+
+Web 和 API 是独立构建、独立运行的部署单元。Go API 只提供 `/api/v1` JSON 与 `/healthz`，不包含静态页面；Vue Web 不复刻路由语义，只展示后端在固定快照上生成的拓扑和解释结果。本地由 Vite 代理 API，生产由 Web 容器的同源反向代理连接内部 API Service。
+
+只有 API 工作负载持有 Kubernetes 只读权限，Web 工作负载无集群访问权限。该边界允许两者独立发布和扩缩容，同时保持浏览器端同源访问。
 ## 部署与扩展
 
 首选单集群内只读 Server + Web UI。后续多集群使用 Agent 或受控 kubeconfig，并以 `tenantID + clusterID` 隔离。
