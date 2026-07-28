@@ -59,19 +59,20 @@ type TopologyEdge struct {
 }
 
 type EnvoyConfig struct {
-	SnapshotID    string          `json:"snapshotID"`
-	ObservedAt    string          `json:"observedAt"`
-	State         string          `json:"state"`
-	Source        string          `json:"source"`
-	Proxy         string          `json:"proxy"`
-	GatewayID     string          `json:"gatewayID,omitempty"`
-	Controller    string          `json:"controller,omitempty"`
-	Workload      string          `json:"workload,omitempty"`
-	SampledPod    string          `json:"sampledPod,omitempty"`
-	ReadyReplicas int             `json:"readyReplicas,omitempty"`
-	Listeners     []EnvoyListener `json:"listeners"`
-	Clusters      []EnvoyCluster  `json:"clusters"`
-	RawConfig     json.RawMessage `json:"rawConfig,omitempty"`
+	SnapshotID    string           `json:"snapshotID"`
+	ObservedAt    string           `json:"observedAt"`
+	State         string           `json:"state"`
+	Source        string           `json:"source"`
+	Proxy         string           `json:"proxy"`
+	GatewayID     string           `json:"gatewayID,omitempty"`
+	Controller    string           `json:"controller,omitempty"`
+	Workload      string           `json:"workload,omitempty"`
+	SampledPod    string           `json:"sampledPod,omitempty"`
+	ReadyReplicas int              `json:"readyReplicas,omitempty"`
+	Listeners     []EnvoyListener  `json:"listeners"`
+	Clusters      []EnvoyCluster   `json:"clusters"`
+	Extensions    []EnvoyExtension `json:"extensions"`
+	RawConfig     json.RawMessage  `json:"rawConfig,omitempty"`
 }
 
 type EnvoyListener struct {
@@ -98,6 +99,35 @@ type EnvoyHTTPFilter struct {
 	Stage         string `json:"stage"`
 	ConfigSummary string `json:"configSummary"`
 	Terminal      bool   `json:"terminal"`
+}
+
+type EnvoyExtension struct {
+	ID            string                     `json:"id"`
+	Name          string                     `json:"name"`
+	Kind          string                     `json:"kind"`
+	TypeURL       string                     `json:"typeURL,omitempty"`
+	Status        Status                     `json:"status"`
+	ConfigSource  string                     `json:"configSource"`
+	ConfigSummary string                     `json:"configSummary"`
+	Attachments   []EnvoyExtensionAttachment `json:"attachments"`
+	Dependencies  []EnvoyExtensionDependency `json:"dependencies"`
+}
+
+type EnvoyExtensionAttachment struct {
+	ListenerID   string `json:"listenerID"`
+	ListenerName string `json:"listenerName"`
+	FilterChain  string `json:"filterChain"`
+	FilterName   string `json:"filterName"`
+	FilterType   string `json:"filterType"`
+	Position     int    `json:"position"`
+}
+
+type EnvoyExtensionDependency struct {
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Relation string `json:"relation"`
+	Evidence string `json:"evidence"`
+	Resolved bool   `json:"resolved"`
 }
 
 type EnvoyRoute struct {

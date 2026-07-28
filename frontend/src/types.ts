@@ -70,6 +70,32 @@ export interface EnvoyHTTPFilter {
   configSummary: string
   terminal: boolean
 }
+export interface EnvoyExtensionAttachment {
+  listenerID: string
+  listenerName: string
+  filterChain: string
+  filterName: string
+  filterType: string
+  position: number
+}
+export interface EnvoyExtensionDependency {
+  kind: string
+  name: string
+  relation: string
+  evidence: string
+  resolved: boolean
+}
+export interface EnvoyExtension {
+  id: string
+  name: string
+  kind: 'Wasm' | 'ext_proc' | 'Envoy Filter'
+  typeURL?: string
+  status: Status
+  configSource: string
+  configSummary: string
+  attachments: EnvoyExtensionAttachment[]
+  dependencies: EnvoyExtensionDependency[]
+}
 export interface EnvoyFilterChain {
   name: string
   match: string
@@ -99,6 +125,7 @@ export interface EnvoyConfig {
   readyReplicas?: number
   listeners: EnvoyListener[]
   clusters: EnvoyCluster[]
+  extensions: EnvoyExtension[]
   rawConfig?: unknown
 }
 export interface RouteExplanationRequest {

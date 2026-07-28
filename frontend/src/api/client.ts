@@ -42,6 +42,7 @@ async function getEnvoy(gatewayID: string): Promise<EnvoyConfig> {
   const value = await request<EnvoyConfig>(`/api/v1/envoy/config?gatewayID=${encodeURIComponent(gatewayID)}`)
   value.listeners ??= []
   value.clusters ??= []
+  value.extensions ??= []
   for (const listener of value.listeners) {
     listener.filterChains ??= []
     for (const chain of listener.filterChains) {
@@ -51,6 +52,10 @@ async function getEnvoy(gatewayID: string): Promise<EnvoyConfig> {
     }
   }
   for (const cluster of value.clusters) cluster.endpoints ??= []
+  for (const extension of value.extensions) {
+    extension.attachments ??= []
+    extension.dependencies ??= []
+  }
   return value
 }
 async function explain(payload: RouteExplanationRequest): Promise<RouteExplanation> {

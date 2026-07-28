@@ -141,6 +141,16 @@ flowchart TB
 
 原始 YAML/JSON 仅作为核验材料，默认折叠在详情末尾；支持搜索关键字段和复制，不支持在线修改。
 
+## Envoy 配置与扩展监控
+
+Envoy 页面包含 Listener、扩展监控和原始 JSON 三个视图。扩展监控按运行时 Filter 配置聚合 Wasm、ext_proc 和其他 Envoy Filter，并展示：
+
+- Filter 在 Listener 和 Filter Chain 中的顺序与挂载点；
+- ECDS 配置、Wasm 模块、ext_proc gRPC Cluster 等可由 config dump 直接证明的依赖；
+- 依赖是否在同一 config dump 中解析成功，以及用于关联的具体字段路径。
+
+Wasm 运行时配置不等同于 Istio WasmPlugin 资源；它也可能由 EnvoyFilter 或其他控制面配置生成。Envoy config dump 不保留 Kubernetes 来源资源引用时，UI 必须显示“归属无法确认”，不能将运行时类型伪装成声明来源。
+
 ## 状态设计
 
 每个页面都应处理以下状态，避免空白或误导：

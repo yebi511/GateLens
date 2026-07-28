@@ -24,6 +24,7 @@ GateLens 以只读方式监听 Kubernetes 资源，构建带来源证据的有�
 - 根据 Host、Path 与 Method 对请求进行静态解释。
 - 提供资源搜索、配置健康清单和快照上下文。
 - 自动定位网关的 Ready Pod，通过临时 port-forward 读取 Envoy `/config_dump`。
+- 聚合 Wasm、`ext_proc` 和其他 Envoy Filter 的运行时挂载点，并关联 ECDS、Wasm 模块和上游 Cluster。
 - 使用最小只读 RBAC，不修改集群资源，也不代理业务请求。
 
 当前尚未实现 Higress/Istio 专有 CRD 的完整语义、多集群联邦拓扑、Trace/日志关联和实际流量确认。请求模拟属于**按快照推断**，不等同于真实请求已经经过该路径。

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { ArrowRight, Braces, Check, ChevronDown, ChevronUp, Copy, Filter, ListTree, Search, Server, Waypoints } from '@lucide/vue'
+import { ArrowRight, Braces, Check, ChevronDown, ChevronUp, Copy, Cpu, Filter, Link2, ListTree, Puzzle, Search, Server, Waypoints } from '@lucide/vue'
 import { api } from '../api/client'
 import StatusBadge from '../components/StatusBadge.vue'
-import type { EnvoyCluster, EnvoyConfig, EnvoyListener, Topology } from '../types'
+import type { EnvoyCluster, EnvoyConfig, EnvoyExtension, EnvoyListener, Topology } from '../types'
 
 const props = defineProps<{ topology: Topology; initialGatewayId?: string }>()
 const emit = defineEmits<{ error: [message: string] }>()
@@ -13,7 +13,8 @@ const config = ref<EnvoyConfig | null>(null)
 const loading = ref(false)
 const search = ref('')
 const selectedListenerID = ref('')
-const viewMode = ref<'parsed' | 'raw'>('parsed')
+const selectedExtensionID = ref('')
+const viewMode = ref<'listeners' | 'extensions' | 'raw'>('listeners')
 const rawSearch = ref('')
 const rawMatchIndex = ref(-1)
 const rawEditor = ref<HTMLTextAreaElement | null>(null)
@@ -28,6 +29,11 @@ const listeners = computed(() => {
   return (config.value?.listeners ?? []).filter((listener) => !query || JSON.stringify(listener).toLowerCase().includes(query))
 })
 const selectedListener = computed(() => listeners.value.find((listener) => listener.id === selectedListenerID.value) ?? listeners.value[0] ?? null)
+const extensions = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  return (config.value?.extensions ?? []).filter((extension) => !query || JSON.stringify(extension).toLowerCase().includes(query))
+})
+const selectedExtension = computed(() => extensions.value.find((extension) => extension.id === selectedExtensionID.value) ?? extensions.value[0] ?? null)
 const clusterMap = computed(() => new Map((config.value?.clusters ?? []).map((cluster) => [cluster.name, cluster])))
 const rawConfigText = computed(() => {
   if (config.value?.rawConfig == null) return ''
@@ -73,6 +79,9 @@ watch(gatewayID, loadConfig, { immediate: true })
 watch(listeners, (items) => {
   if (!items.some((listener) => listener.id === selectedListenerID.value)) selectedListenerID.value = items[0]?.id ?? ''
 })
+watch(extensions, (items) => {
+  if (!items.some((extension) => extension.id === selectedExtensionID.value)) selectedExtensionID.value = items[0]?.id ?? ''
+})
 watch(rawSearch, () => {
   rawMatchIndex.value = -1
 })
@@ -86,8 +95,10 @@ async function loadConfig() {
   try {
     config.value = await api.envoy(gatewayID.value)
     selectedListenerID.value = config.value.listeners[0]?.id ?? ''
+    selectedExtensionID.value = config.value.extensions?.[0]?.id ?? ''
     rawSearch.value = ''
-    viewMode.value = 'parsed'
+    search.value = ''
+    viewMode.value = 'listeners'
   } catch (error) {
     config.value = null
     emit('error', `Envoy 配置读取失败：${error instanceof Error ? error.message : '未知错误'}`)
@@ -98,6 +109,13 @@ async function loadConfig() {
 function routeClusters(cluster: string, weighted: { name: string }[] | undefined): EnvoyCluster[] {
   const names = weighted?.length ? weighted.map((item) => item.name) : cluster ? [cluster] : []
   return names.map((name) => clusterMap.value.get(name)).filter((item): item is EnvoyCluster => Boolean(item))
+}
+function extensionTotals(extension: EnvoyExtension) {
+  return {
+    attachments: extension.attachments.length,
+    dependencies: extension.dependencies.length,
+    unresolved: extension.dependencies.filter((item) => !item.resolved).length,
+  }
 }
 function listenerTotals(listener: EnvoyListener) {
   return {
@@ -162,19 +180,23 @@ onBeforeUnmount(() => {
         </select>
       </label>
       <div class="envoy-view-tabs" role="tablist" aria-label="Envoy 配置视图">
-        <button type="button" role="tab" :aria-selected="viewMode === 'parsed'" :class="{ active: viewMode === 'parsed' }" @click="viewMode = 'parsed'">
-          <ListTree :size="14" aria-hidden="true" />解析视图
+        <button type="button" role="tab" :aria-selected="viewMode === 'listeners'" :class="{ active: viewMode === 'listeners' }" @click="viewMode = 'listeners'">
+          <ListTree :size="14" aria-hidden="true" />Listener
+        </button>
+        <button type="button" role="tab" :aria-selected="viewMode === 'extensions'" :class="{ active: viewMode === 'extensions' }" @click="viewMode = 'extensions'">
+          <Puzzle :size="14" aria-hidden="true" />扩展监控
         </button>
         <button type="button" role="tab" :aria-selected="viewMode === 'raw'" :class="{ active: viewMode === 'raw' }" :disabled="!rawConfigText" @click="viewMode = 'raw'">
           <Braces :size="14" aria-hidden="true" />原始 JSON
         </button>
       </div>
-      <template v-if="viewMode === 'parsed'">
+      <template v-if="viewMode !== 'raw'">
         <label class="search-field envoy-search-field">
           <Search :size="15" aria-hidden="true" />
-          <input v-model="search" placeholder="Listener、Route 或 Cluster" />
+          <input v-model="search" :placeholder="viewMode === 'listeners' ? 'Listener、Route 或 Cluster' : 'Wasm、ext_proc 或 Filter'" />
         </label>
-        <span class="filter-count">{{ listeners.length }} 个 Listener</span>
+        <span v-if="viewMode === 'listeners'" class="filter-count">{{ listeners.length }} 个 Listener</span>
+        <span v-else class="filter-count">{{ extensions.length }} 个扩展</span>
       </template>
       <template v-else>
         <label class="search-field envoy-search-field">
@@ -197,7 +219,7 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <div v-if="viewMode === 'parsed'" class="envoy-workspace">
+    <div v-if="viewMode === 'listeners'" class="envoy-workspace">
       <section class="envoy-list-panel">
         <div v-if="loading" class="loading-block"><span class="spinner" />正在连接 Envoy Pod</div>
         <button
@@ -282,6 +304,126 @@ onBeforeUnmount(() => {
           <Waypoints :size="28" aria-hidden="true" />
           <h2>选择一个 Listener</h2>
           <p>查看它的 Filter Chain 和请求处理路径。</p>
+        </div>
+      </section>
+    </div>
+
+    <div v-else-if="viewMode === 'extensions'" class="envoy-workspace envoy-extension-workspace">
+      <section class="envoy-list-panel">
+        <div v-if="loading" class="loading-block"><span class="spinner" />正在读取运行时扩展</div>
+        <button
+          v-for="extension in extensions"
+          v-else
+          :key="extension.id"
+          class="envoy-list-item extension-list-item"
+          :class="{ selected: selectedExtension?.id === extension.id }"
+          type="button"
+          @click="selectedExtensionID = extension.id"
+        >
+          <span class="envoy-list-icon extension-list-icon">
+            <Cpu v-if="extension.kind === 'Wasm'" :size="15" aria-hidden="true" />
+            <Link2 v-else-if="extension.kind === 'ext_proc'" :size="15" aria-hidden="true" />
+            <Puzzle v-else :size="15" aria-hidden="true" />
+          </span>
+          <span class="envoy-list-copy">
+            <strong>{{ extension.name }}</strong>
+            <small>{{ extension.kind }} · {{ extension.configSource }}</small>
+            <em>{{ extensionTotals(extension).attachments }} 个挂载点 · {{ extensionTotals(extension).dependencies }} 个依赖</em>
+          </span>
+          <StatusBadge :status="extension.status" :label="extension.status === 'healthy' ? '已解析' : '引用缺失'" />
+        </button>
+        <div v-if="!loading && !extensions.length" class="loading-block">没有匹配的运行时扩展</div>
+      </section>
+
+      <section class="envoy-detail-panel extension-detail-panel">
+        <template v-if="selectedExtension">
+          <div class="envoy-detail-head extension-detail-head">
+            <div>
+              <p class="eyebrow">{{ selectedExtension.kind }}</p>
+              <h2>{{ selectedExtension.name }}</h2>
+              <p>{{ selectedExtension.configSummary }}</p>
+            </div>
+            <StatusBadge :status="selectedExtension.status" :label="selectedExtension.status === 'healthy' ? '关系已解析' : extensionTotals(selectedExtension).unresolved + ' 个引用未解析'" />
+          </div>
+
+          <section class="extension-summary-band">
+            <div><span>挂载点</span><strong>{{ selectedExtension.attachments.length }}</strong></div>
+            <div><span>依赖</span><strong>{{ selectedExtension.dependencies.length }}</strong></div>
+            <div><span>配置来源</span><strong>{{ selectedExtension.configSource }}</strong></div>
+          </section>
+
+          <section class="envoy-subsection extension-section">
+            <h3>运行时挂载 <small>Listener 到扩展实现</small></h3>
+            <div class="extension-attachment-list">
+              <article
+                v-for="attachment in selectedExtension.attachments"
+                :key="attachment.listenerID + '-' + attachment.filterChain + '-' + attachment.position"
+                class="extension-attachment-row"
+              >
+                <div class="extension-flow">
+                  <span class="extension-flow-node">
+                    <Waypoints :size="15" aria-hidden="true" />
+                    <b>Listener</b>
+                    <small>{{ attachment.listenerName }}</small>
+                  </span>
+                  <ArrowRight :size="15" aria-hidden="true" />
+                  <span class="extension-flow-node">
+                    <Filter :size="15" aria-hidden="true" />
+                    <b>Filter Chain</b>
+                    <small>{{ attachment.filterChain || 'default' }}</small>
+                  </span>
+                  <ArrowRight :size="15" aria-hidden="true" />
+                  <span class="extension-flow-node">
+                    <Puzzle :size="15" aria-hidden="true" />
+                    <b>{{ attachment.filterType }}</b>
+                    <small>#{{ attachment.position }} · {{ attachment.filterName }}</small>
+                  </span>
+                  <template v-if="selectedExtension.kind !== 'Envoy Filter'">
+                    <ArrowRight :size="15" aria-hidden="true" />
+                    <span class="extension-flow-node extension-flow-target">
+                      <Cpu v-if="selectedExtension.kind === 'Wasm'" :size="15" aria-hidden="true" />
+                      <Link2 v-else :size="15" aria-hidden="true" />
+                      <b>{{ selectedExtension.kind }}</b>
+                      <small>{{ selectedExtension.typeURL?.split('.').pop() || 'runtime config' }}</small>
+                    </span>
+                  </template>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="envoy-subsection extension-section">
+            <h3>关联依赖 <small>按 config_dump 字段解析</small></h3>
+            <div class="extension-dependency-list">
+              <div v-for="dependency in selectedExtension.dependencies" :key="dependency.kind + '-' + dependency.name" class="extension-dependency-row">
+                <span class="dependency-state" :class="{ unresolved: !dependency.resolved }">
+                  <Check v-if="dependency.resolved" :size="13" aria-hidden="true" />
+                  <Link2 v-else :size="13" aria-hidden="true" />
+                </span>
+                <div>
+                  <strong>{{ dependency.relation }} {{ dependency.kind }}</strong>
+                  <code>{{ dependency.name }}</code>
+                  <small>{{ dependency.evidence }}</small>
+                </div>
+                <span>{{ dependency.resolved ? '已解析' : '未解析' }}</span>
+              </div>
+              <p v-if="!selectedExtension.dependencies.length" class="muted-copy">没有发现外部配置或 Cluster 依赖。</p>
+            </div>
+          </section>
+
+          <section class="envoy-subsection extension-section extension-source">
+            <h3>来源证据</h3>
+            <dl>
+              <div><dt>运行时类型</dt><dd><code>{{ selectedExtension.typeURL || '未暴露 type URL' }}</code></dd></div>
+              <div><dt>配置位置</dt><dd>{{ selectedExtension.configSource }}</dd></div>
+              <div><dt>资源归属</dt><dd>{{ selectedExtension.kind === 'Wasm' ? 'WasmPlugin / EnvoyFilter 归属无法由 config_dump 确认' : 'EnvoyFilter 归属无法由 config_dump 确认' }}</dd></div>
+            </dl>
+          </section>
+        </template>
+        <div v-else class="empty-detail large">
+          <Puzzle :size="28" aria-hidden="true" />
+          <h2>选择一个扩展</h2>
+          <p>查看运行时挂载点和依赖关系。</p>
         </div>
       </section>
     </div>

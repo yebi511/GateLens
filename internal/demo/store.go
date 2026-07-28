@@ -113,7 +113,8 @@ func envoyConfig(snapshot domain.Snapshot) domain.EnvoyConfig {
 						Name: "https-api", Match: "SNI: api.ai.example.com", Transport: "TLS",
 						HTTPFilters: []domain.EnvoyHTTPFilter{
 							{Name: "envoy.filters.http.cors", Type: "HTTP filter", Stage: "request", ConfigSummary: "allow_origin: https://console.ai.example.com"},
-							{Name: "envoy.filters.http.ext_proc", Type: "HTTP filter", Stage: "request", ConfigSummary: "ai-policy-check · gRPC"},
+							{Name: "ai-platform.ai-guard", Type: "HTTP filter", Stage: "request", ConfigSummary: "ai-guard · root guard-root · envoy.wasm.runtime.v8"},
+							{Name: "envoy.filters.http.ext_proc", Type: "HTTP filter", Stage: "request", ConfigSummary: "gRPC: ext-proc-ai-policy · timeout 200ms · failure closed"},
 							{Name: "envoy.filters.http.router", Type: "HTTP filter", Stage: "terminal", ConfigSummary: "routes the request to the selected cluster", Terminal: true},
 						},
 						Routes: []domain.EnvoyRoute{
@@ -129,10 +130,32 @@ func envoyConfig(snapshot domain.Snapshot) domain.EnvoyConfig {
 				},
 			},
 		},
+		Extensions: []domain.EnvoyExtension{
+			{
+				ID: "Wasm|ai-platform.ai-guard|demo", Name: "ai-platform.ai-guard", Kind: "Wasm",
+				TypeURL: "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm", Status: domain.StatusHealthy,
+				ConfigSource: "ECDS", ConfigSummary: "ai-guard · root guard-root · envoy.wasm.runtime.v8",
+				Attachments:  []domain.EnvoyExtensionAttachment{{ListenerID: "0.0.0.0_8443|0.0.0.0:8443|0", ListenerName: "0.0.0.0_8443", FilterChain: "https-api", FilterName: "ai-platform.ai-guard", FilterType: "HTTP filter", Position: 2}},
+				Dependencies: []domain.EnvoyExtensionDependency{{Kind: "ECDS", Name: "ai-platform.ai-guard", Relation: "resolves through", Evidence: "http_filters[].config_discovery + EcdsConfigDump", Resolved: true}, {Kind: "Wasm module", Name: "/var/local/lib/ai-guard.wasm", Relation: "loads", Evidence: "typed_config.config.vm_config.code", Resolved: true}},
+			},
+			{
+				ID: "ext_proc|envoy.filters.http.ext_proc|demo", Name: "envoy.filters.http.ext_proc", Kind: "ext_proc",
+				TypeURL: "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor", Status: domain.StatusHealthy,
+				ConfigSource: "inline typed_config", ConfigSummary: "gRPC: ext-proc-ai-policy · timeout 200ms · failure closed",
+				Attachments:  []domain.EnvoyExtensionAttachment{{ListenerID: "0.0.0.0_8443|0.0.0.0:8443|0", ListenerName: "0.0.0.0_8443", FilterChain: "https-api", FilterName: "envoy.filters.http.ext_proc", FilterType: "HTTP filter", Position: 3}},
+				Dependencies: []domain.EnvoyExtensionDependency{{Kind: "Cluster", Name: "ext-proc-ai-policy", Relation: "calls", Evidence: "typed_config grpc_service/envoy_grpc.cluster_name", Resolved: true}},
+			},
+			{
+				ID: "Envoy Filter|envoy.filters.http.cors|demo", Name: "envoy.filters.http.cors", Kind: "Envoy Filter",
+				Status: domain.StatusHealthy, ConfigSource: "filter name", ConfigSummary: "configured",
+				Attachments: []domain.EnvoyExtensionAttachment{{ListenerID: "0.0.0.0_8443|0.0.0.0:8443|0", ListenerName: "0.0.0.0_8443", FilterChain: "https-api", FilterName: "envoy.filters.http.cors", FilterType: "HTTP filter", Position: 1}}, Dependencies: []domain.EnvoyExtensionDependency{},
+			},
+		},
 		Clusters: []domain.EnvoyCluster{
 			{Name: "inference|qwen-production", Type: "EDS", Discovery: "xDS / istiod", ConnectTimeout: "2s", Endpoints: []domain.EnvoyEndpoint{{Address: "10.42.3.18", Port: 8080, Status: domain.StatusHealthy, Health: "healthy", Weight: 50}, {Address: "10.42.4.22", Port: 8080, Status: domain.StatusHealthy, Health: "healthy", Weight: 50}, {Address: "10.42.7.9", Port: 8080, Status: domain.StatusWarning, Health: "warming"}}},
 			{Name: "inference|embedding-backend", Type: "EDS", Discovery: "xDS / istiod", ConnectTimeout: "2s", Endpoints: []domain.EnvoyEndpoint{{Address: "10.42.9.12", Port: 8080, Status: domain.StatusError, Health: "no healthy hosts"}}},
 			{Name: "redirect-to-https", Type: "STATIC", Discovery: "static", ConnectTimeout: "1s"},
+			{Name: "ext-proc-ai-policy", Type: "STATIC", Discovery: "inline", ConnectTimeout: "1s", Endpoints: []domain.EnvoyEndpoint{{Address: "10.42.12.7", Port: 9002, Status: domain.StatusHealthy, Health: "healthy", Weight: 1}}},
 		},
 	}
 	config.RawConfig = demoRawEnvoyConfig()
@@ -163,7 +186,22 @@ func demoRawEnvoyConfig() []byte {
                         "stat_prefix": "https-api",
                         "http_filters": [
                           {"name": "envoy.filters.http.cors"},
-                          {"name": "envoy.filters.http.ext_proc"},
+                          {
+                            "name": "ai-platform.ai-guard",
+                            "config_discovery": {
+                              "config_source": {"ads": {}},
+                              "type_urls": ["type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm"]
+                            }
+                          },
+                          {
+                            "name": "envoy.filters.http.ext_proc",
+                            "typed_config": {
+                              "@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+                              "grpc_service": {"envoy_grpc": {"cluster_name": "ext-proc-ai-policy"}},
+                              "message_timeout": "200ms",
+                              "failure_mode_allow": false
+                            }
+                          },
                           {"name": "envoy.filters.http.router"}
                         ],
                         "route_config": {
@@ -190,11 +228,44 @@ func demoRawEnvoyConfig() []byte {
       ]
     },
     {
+      "@type": "type.googleapis.com/envoy.admin.v3.EcdsConfigDump",
+      "ecds_filters": [
+        {
+          "ecds_filter": {
+            "name": "ai-platform.ai-guard",
+            "typed_config": {
+              "@type": "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm",
+              "config": {
+                "name": "ai-guard",
+                "root_id": "guard-root",
+                "vm_config": {
+                  "vm_id": "ai-guard-vm",
+                  "runtime": "envoy.wasm.runtime.v8",
+                  "code": {"local": {"filename": "/var/local/lib/ai-guard.wasm"}}
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
       "@type": "type.googleapis.com/envoy.admin.v3.ClustersConfigDump",
       "dynamic_active_clusters": [
         {"cluster": {"name": "inference|qwen-production", "type": "EDS", "connect_timeout": "2s"}},
         {"cluster": {"name": "inference|embedding-backend", "type": "EDS", "connect_timeout": "2s"}},
-        {"cluster": {"name": "redirect-to-https", "type": "STATIC", "connect_timeout": "1s"}}
+        {"cluster": {"name": "redirect-to-https", "type": "STATIC", "connect_timeout": "1s"}},
+        {
+          "cluster": {
+            "name": "ext-proc-ai-policy",
+            "type": "STATIC",
+            "connect_timeout": "1s",
+            "load_assignment": {
+              "cluster_name": "ext-proc-ai-policy",
+              "endpoints": [{"lb_endpoints": [{"health_status": "HEALTHY", "endpoint": {"address": {"socket_address": {"address": "10.42.12.7", "port_value": 9002}}}}]}]
+            }
+          }
+        }
       ]
     }
   ]

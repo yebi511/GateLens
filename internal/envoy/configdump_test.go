@@ -126,3 +126,100 @@ func TestParseEDSAssignmentsAndWeightedClusters(t *testing.T) {
 		t.Fatalf("cluster=%#v", result.Clusters[0])
 	}
 }
+
+func TestParseRuntimeExtensionsAndRelationships(t *testing.T) {
+	wasmConfig := map[string]any{
+		"@type": "type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm",
+		"config": map[string]any{
+			"name": "ai-guard", "root_id": "guard-root",
+			"vm_config": map[string]any{
+				"runtime": "envoy.wasm.runtime.v8",
+				"code":    map[string]any{"local": map[string]any{"filename": "/var/local/lib/ai-guard.wasm"}},
+			},
+		},
+	}
+	extProcConfig := map[string]any{
+		"@type":           "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+		"grpc_service":    map[string]any{"envoy_grpc": map[string]any{"cluster_name": "ext-proc-policy"}},
+		"message_timeout": "200ms", "failure_mode_allow": false,
+	}
+	hcm := map[string]any{"http_filters": []any{
+		map[string]any{
+			"name": "ai-platform.model-router",
+			"config_discovery": map[string]any{
+				"config_source": map[string]any{"ads": map[string]any{}},
+				"type_urls":     []any{"type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm"},
+			},
+		},
+		map[string]any{"name": "envoy.filters.http.ext_proc", "typed_config": extProcConfig},
+		map[string]any{"name": "envoy.filters.http.cors"},
+		map[string]any{"name": "envoy.filters.http.router"},
+	}}
+	listener := map[string]any{
+		"name": "https", "address": map[string]any{"socket_address": map[string]any{"address": "0.0.0.0", "port_value": float64(8443)}},
+		"filter_chains": []any{map[string]any{"name": "api", "filters": []any{
+			map[string]any{"name": "envoy.filters.network.http_connection_manager", "typed_config": hcm},
+		}}},
+	}
+	dump := map[string]any{"configs": []any{
+		map[string]any{"dynamic_listeners": []any{map[string]any{"active_state": map[string]any{"listener": listener}}}},
+		map[string]any{"ecds_filters": []any{map[string]any{"ecds_filter": map[string]any{"name": "ai-platform.model-router", "typed_config": wasmConfig}}}},
+		map[string]any{"dynamic_active_clusters": []any{map[string]any{"cluster": map[string]any{"name": "ext-proc-policy", "type": "EDS"}}}},
+	}}
+
+	result := Parse(dump, "snap-extensions", "2026-07-27T00:00:00Z")
+	if len(result.Extensions) != 3 {
+		t.Fatalf("extensions=%d, want 3: %#v", len(result.Extensions), result.Extensions)
+	}
+	byKind := map[string]domain.EnvoyExtension{}
+	for _, extension := range result.Extensions {
+		byKind[extension.Kind] = extension
+	}
+	wasm := byKind["Wasm"]
+	if wasm.Name != "ai-platform.model-router" || wasm.ConfigSource != "ECDS" || len(wasm.Attachments) != 1 {
+		t.Fatalf("wasm=%#v", wasm)
+	}
+	if len(wasm.Dependencies) != 2 || !wasm.Dependencies[0].Resolved || !wasm.Dependencies[1].Resolved {
+		t.Fatalf("wasm dependencies=%#v", wasm.Dependencies)
+	}
+	extProc := byKind["ext_proc"]
+	if extProc.Status != domain.StatusHealthy || len(extProc.Dependencies) != 1 || extProc.Dependencies[0].Name != "ext-proc-policy" || !extProc.Dependencies[0].Resolved {
+		t.Fatalf("ext_proc=%#v", extProc)
+	}
+	if extProc.ConfigSummary != "gRPC: ext-proc-policy · timeout 200ms · failure closed" {
+		t.Fatalf("ext_proc summary=%q", extProc.ConfigSummary)
+	}
+	if _, found := byKind["router"]; found {
+		t.Fatal("terminal router must not be included in extension inventory")
+	}
+}
+
+func TestMissingECDSExtensionIsWarning(t *testing.T) {
+	hcm := map[string]any{"http_filters": []any{
+		map[string]any{
+			"name": "ai-platform.missing-wasm",
+			"config_discovery": map[string]any{
+				"config_source": map[string]any{"ads": map[string]any{}},
+				"type_urls":     []any{"type.googleapis.com/envoy.extensions.filters.http.wasm.v3.Wasm"},
+			},
+		},
+		map[string]any{"name": "envoy.filters.http.router"},
+	}}
+	listener := map[string]any{"name": "http", "filter_chains": []any{map[string]any{"filters": []any{
+		map[string]any{"name": "envoy.filters.network.http_connection_manager", "typed_config": hcm},
+	}}}}
+	result := Parse(map[string]any{"configs": []any{
+		map[string]any{"dynamic_listeners": []any{map[string]any{"active_state": map[string]any{"listener": listener}}}},
+	}}, "snap-missing-ecds", "2026-07-27T00:00:00Z")
+
+	if len(result.Extensions) != 1 {
+		t.Fatalf("extensions=%d, want 1", len(result.Extensions))
+	}
+	extension := result.Extensions[0]
+	if extension.Kind != "Wasm" || extension.Status != domain.StatusWarning {
+		t.Fatalf("extension=%#v", extension)
+	}
+	if len(extension.Dependencies) != 1 || extension.Dependencies[0].Kind != "ECDS" || extension.Dependencies[0].Resolved {
+		t.Fatalf("dependencies=%#v", extension.Dependencies)
+	}
+}
