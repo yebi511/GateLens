@@ -8,6 +8,7 @@ import EnvoyView from './views/EnvoyView.vue'
 import HealthView from './views/HealthView.vue'
 import ResourcesView from './views/ResourcesView.vue'
 import SimulatorView from './views/SimulatorView.vue'
+import FederatedTopologyView from './views/FederatedTopologyView.vue'
 import TopologyView from './views/TopologyView.vue'
 import type { Finding, GateLensContext, Resource, Topology, ViewID } from './types'
 
@@ -86,7 +87,7 @@ onBeforeUnmount(() => {
       <ContextBar v-model:namespace="namespace" :context="context" :loading="loading" @menu="sidebarOpen = true" @refresh="loadAll" />
       <div v-if="loading && !context" class="initial-loading"><LoaderCircle :size="30" class="spin" /><strong>正在建立集群上下文</strong><span>读取 API 快照和拓扑数据</span></div>
       <template v-else-if="context && topology">
-        <TopologyView v-if="currentView === 'topology'" :context="context" :topology="topology" :namespace="namespace" :focus-node-id="focusNodeId" @navigate="navigate" @open-envoy="openEnvoy" />
+        <FederatedTopologyView v-if="currentView === 'topology'" :context="context" :topology="topology" :namespace="namespace" :focus-node-id="focusNodeId" @navigate="navigate" @open-envoy="openEnvoy" />
         <EnvoyView v-else-if="currentView === 'envoy'" :topology="topology" :initial-gateway-id="envoyGatewayID" @error="showError" />
         <SimulatorView v-else-if="currentView === 'simulator'" :context="context" :topology="topology" @locate="locate" @error="showError" />
         <HealthView v-else-if="currentView === 'health'" :context="context" :findings="findings" @navigate="navigate" @locate="locate" />

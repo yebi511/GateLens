@@ -16,3 +16,12 @@ type Reader interface {
 	Resources(query string) []domain.Resource
 	Explain(domain.RouteExplanationRequest) domain.RouteExplanation
 }
+
+type SnapshotReceiver interface {
+	ReceiveSnapshot(context.Context, domain.AgentSnapshot) error
+}
+
+type AgentCommandBroker interface {
+	NextAgentCommand(context.Context, string) (domain.AgentCommand, bool, error)
+	CompleteAgentCommand(context.Context, domain.AgentCommandResult) error
+}

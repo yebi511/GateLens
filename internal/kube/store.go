@@ -29,13 +29,14 @@ var (
 )
 
 type Store struct {
-	clusterID  string
-	core       kubernetes.Interface
-	dynamic    dynamic.Interface
-	mutex      sync.RWMutex
-	snapshot   snapshot
-	restConfig *rest.Config
-	envoyCache map[string]cachedEnvoyConfig
+	clusterID    string
+	core         kubernetes.Interface
+	dynamic      dynamic.Interface
+	capabilities []string
+	mutex        sync.RWMutex
+	snapshot     snapshot
+	restConfig   *rest.Config
+	envoyCache   map[string]cachedEnvoyConfig
 }
 type snapshot struct {
 	context   domain.Context
@@ -80,22 +81,71 @@ func (s *Store) Run(ctx context.Context) error {
 	ingresses := coreFactory.Networking().V1().Ingresses().Informer()
 	pods := coreFactory.Core().V1().Pods().Informer()
 	deployments := coreFactory.Apps().V1().Deployments().Informer()
-	gateways := dynamicFactory.ForResource(gatewaysGVR).Informer()
-	gatewayClasses := dynamicFactory.ForResource(gatewayClassesGVR).Informer()
-	routes := dynamicFactory.ForResource(routesGVR).Informer()
-	grants := dynamicFactory.ForResource(grantsGVR).Informer()
-	mcpBridges := dynamicFactory.ForResource(mcpBridgesGVR).Informer()
-	stores := []cache.Store{services.GetStore(), endpoints.GetStore(), namespaces.GetStore(), gateways.GetStore(), routes.GetStore(), grants.GetStore(), ingresses.GetStore(), mcpBridges.GetStore(), gatewayClasses.GetStore(), deployments.GetStore(), pods.GetStore()}
-	refresh := func() { s.rebuild(stores...) }
-	allInformers := []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, pods, deployments, gateways, gatewayClasses, routes, grants, mcpBridges}
+
+	optionalResources := []schema.GroupVersionResource{gatewaysGVR, gatewayClassesGVR, routesGVR, grantsGVR, mcpBridgesGVR}
+	available := discoverDynamicResources(s.core.Discovery(), optionalResources)
+	emptyStore := func() cache.Store { return cache.NewStore(cache.MetaNamespaceKeyFunc) }
+	stores := []cache.Store{
+		services.GetStore(),
+		endpoints.GetStore(),
+		namespaces.GetStore(),
+		emptyStore(),
+		emptyStore(),
+		emptyStore(),
+		ingresses.GetStore(),
+		emptyStore(),
+		emptyStore(),
+		deployments.GetStore(),
+		pods.GetStore(),
+	}
+
+	allInformers := []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, pods, deployments}
+	synced := []cache.InformerSynced{services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, ingresses.HasSynced, pods.HasSynced, deployments.HasSynced}
+	addDynamicInformer := func(resource schema.GroupVersionResource, storeIndex int) {
+		if !available[resource] {
+			return
+		}
+		informer := dynamicFactory.ForResource(resource).Informer()
+		stores[storeIndex] = informer.GetStore()
+		allInformers = append(allInformers, informer)
+		synced = append(synced, informer.HasSynced)
+	}
+	addDynamicInformer(gatewaysGVR, 3)
+	addDynamicInformer(routesGVR, 4)
+	addDynamicInformer(grantsGVR, 5)
+	addDynamicInformer(mcpBridgesGVR, 7)
+	addDynamicInformer(gatewayClassesGVR, 8)
+
+	s.capabilities = []string{"endpointslice", "higress-ingress", "envoy-auto-discovery"}
+	if available[gatewaysGVR] || available[routesGVR] || available[gatewayClassesGVR] {
+		s.capabilities = append(s.capabilities, "gateway-api")
+	}
+	if available[grantsGVR] {
+		s.capabilities = append(s.capabilities, "reference-grant")
+	}
+	if available[mcpBridgesGVR] {
+		s.capabilities = append(s.capabilities, "higress-mcpbridge")
+	}
+
+	ready := make(chan struct{})
+	refresh := func() {
+		select {
+		case <-ready:
+			s.rebuild(stores...)
+		default:
+		}
+	}
 	for _, informer := range allInformers {
 		_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: func(any) { refresh() }, UpdateFunc: func(any, any) { refresh() }, DeleteFunc: func(any) { refresh() }})
 	}
 	coreFactory.Start(ctx.Done())
-	dynamicFactory.Start(ctx.Done())
-	if !cache.WaitForCacheSync(ctx.Done(), services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, ingresses.HasSynced, pods.HasSynced, deployments.HasSynced, gateways.HasSynced, gatewayClasses.HasSynced, routes.HasSynced, grants.HasSynced, mcpBridges.HasSynced) {
+	if len(allInformers) > 6 {
+		dynamicFactory.Start(ctx.Done())
+	}
+	if !cache.WaitForCacheSync(ctx.Done(), synced...) {
 		return fmt.Errorf("synchronize Kubernetes informers")
 	}
+	close(ready)
 	refresh()
 	<-ctx.Done()
 	return nil
@@ -181,7 +231,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		podStore = stores[10]
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	snap := snapshot{runtimes: map[string]gatewayRuntime{}, context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: []string{"gateway-api", "reference-grant", "endpointslice", "higress-ingress", "higress-mcpbridge", "envoy-auto-discovery"}}}
+	snap := snapshot{runtimes: map[string]gatewayRuntime{}, context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: append([]string(nil), s.capabilities...)}}
 	for _, item := range namespaceStore.List() {
 		if ns, ok := item.(*corev1.Namespace); ok {
 			snap.context.Namespaces = append(snap.context.Namespaces, ns.Name)
@@ -195,7 +245,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 			services[svc.Namespace+"/"+svc.Name] = svc
 		}
 	}
-	ready, endpointsByService := endpointReadiness(endpointStore.List())
+	ready, endpointsByService := endpointReadiness(endpointStore.List(), s.clusterID)
 	gatewayClasses := map[string]string{}
 	if gatewayClassStore != nil {
 		gatewayClasses = collectGatewayClasses(gatewayClassStore.List())
@@ -209,6 +259,10 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		gatewayID := "gateway/" + obj.GetNamespace() + "/" + obj.GetName()
 		gateways[obj.GetNamespace()+"/"+obj.GetName()] = gatewayID
 		snap.topology.Nodes = append(snap.topology.Nodes, node(s.clusterID, gatewayID, obj, "Gateway", domain.StatusHealthy, "已发现", "Gateway API 配置对象。"))
+		gatewayNodeIndex := len(snap.topology.Nodes) - 1
+		snap.topology.Nodes[gatewayNodeIndex].Conditions = append(
+			snap.topology.Nodes[gatewayNodeIndex].Conditions, gatewayAddressConditions(obj)...,
+		)
 		if deploymentStore != nil && podStore != nil {
 			addGatewayRuntime(&snap, obj, gatewayClasses, deploymentStore, podStore)
 		}
@@ -278,12 +332,23 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		serviceRefs := map[string]*networkingService{}
 		for key, svc := range services {
 			serviceRefs[key] = &networkingService{node: domain.TopologyNode{ID: "service/" + key, Name: svc.Name, Kind: "Service", Namespace: svc.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: fmt.Sprintf("Service 有 %d 个 Ready Endpoint。", ready[key]), Conditions: []string{fmt.Sprintf("ReadyEndpoints=%d", ready[key])}, Source: "v1 Service"}, readyEndpoints: ready[key]}
+			if svc.Spec.Type == corev1.ServiceTypeExternalName && svc.Spec.ExternalName != "" {
+				serviceRefs[key].external = true
+				serviceRefs[key].node.StatusText = "Configured"
+				serviceRefs[key].node.Summary = "ExternalName Service forwards to " + svc.Spec.ExternalName + "."
+				serviceRefs[key].node.Conditions = append(serviceRefs[key].node.Conditions, "ExternalName="+svc.Spec.ExternalName)
+			}
 		}
 		s.addHigressResources(&snap, ingressStore.List(), mcpBridgeStore.List(), serviceRefs)
 	}
 	snap.topology.SnapshotID = snap.context.Snapshot.ID
 	snap.topology.ObservedAt = now
 	snap.resources = resourcesFromNodes(snap.topology.Nodes, snap.findings)
+	snap.topology.Consistency = "single-cluster"
+	snap.topology.Clusters = []domain.TopologyCluster{{
+		ID: s.clusterID, Name: s.clusterID, Role: "ingress", Version: "Kubernetes",
+		ConnectionState: "connected", Namespaces: append([]string(nil), snap.context.Namespaces...), Snapshot: snap.context.Snapshot,
+	}}
 	s.mutex.Lock()
 	s.snapshot = snap
 	s.mutex.Unlock()
@@ -304,6 +369,24 @@ func (s *Store) addBackends(snap *snapshot, obj *unstructured.Unstructured, rout
 		}
 		allowed := backendNS == obj.GetNamespace() || grants[obj.GetNamespace()+"->"+backendNS+"/"+backendName] || grants[obj.GetNamespace()+"->"+backendNS+"/*"]
 		status, text, summary := domain.StatusHealthy, "Ready", fmt.Sprintf("Service 有 %d 个 Ready Endpoint。", ready[key])
+		if svc.Spec.Type == corev1.ServiceTypeExternalName && svc.Spec.ExternalName != "" {
+			status, text := domain.StatusHealthy, "Configured"
+			if !allowed {
+				status, text = domain.StatusError, "ReferenceGrant missing"
+				addFinding(snap, status, "Cross-namespace reference is not authorized", obj.GetNamespace()+"/"+obj.GetName(), "BackendRef="+key, routeID)
+			}
+			transitID := "transit/" + key
+			ids = append(ids, transitID)
+			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
+				ID: transitID, Name: svc.Name, Kind: "TransitHop", Namespace: svc.Namespace,
+				ClusterID: s.clusterID, Status: status, StatusText: text,
+				Summary:    "ExternalName Service forwards to " + svc.Spec.ExternalName + ".",
+				Conditions: []string{"ExternalName=" + svc.Spec.ExternalName, "Destination=" + svc.Spec.ExternalName},
+				Source:     "v1 Service.spec.externalName",
+			})
+			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: routeID, To: transitID, Relation: "routes"})
+			continue
+		}
 		if !allowed {
 			status = domain.StatusError
 			text = "ReferenceGrant 缺失"
@@ -343,7 +426,7 @@ func appendUnique(nodes []domain.TopologyNode, node domain.TopologyNode) []domai
 	}
 	return append(nodes, node)
 }
-func endpointReadiness(items []any) (map[string]int, map[string][]domain.TopologyNode) {
+func endpointReadiness(items []any, clusterID string) (map[string]int, map[string][]domain.TopologyNode) {
 	ready := map[string]int{}
 	nodes := map[string][]domain.TopologyNode{}
 	for _, item := range items {
@@ -363,6 +446,8 @@ func endpointReadiness(items []any) (map[string]int, map[string][]domain.Topolog
 			for _, address := range endpoint.Addresses {
 				id := "endpoint/" + slice.Namespace + "/" + address
 				nodes[key] = append(nodes[key], domain.TopologyNode{ID: id, Name: address, Kind: "Endpoint", Namespace: slice.Namespace, Status: status, StatusText: text, Summary: "EndpointSlice " + slice.Name + " 中的后端地址。", Conditions: []string{"Ready=" + fmt.Sprint(isReady)}, Source: "discovery.k8s.io/v1 EndpointSlice"})
+				last := len(nodes[key]) - 1
+				nodes[key][last].ClusterID = clusterID
 			}
 		}
 	}
@@ -371,6 +456,7 @@ func endpointReadiness(items []any) (map[string]int, map[string][]domain.Topolog
 func collectGrants(items []any) map[string]bool {
 	result := map[string]bool{}
 	for _, item := range items {
+
 		obj, ok := item.(*unstructured.Unstructured)
 		if !ok {
 			continue
@@ -393,6 +479,22 @@ func collectGrants(items []any) map[string]bool {
 		}
 	}
 	return result
+}
+
+func gatewayAddressConditions(obj *unstructured.Unstructured) []string {
+	addresses, _, _ := unstructured.NestedSlice(obj.Object, "status", "addresses")
+	conditions := make([]string, 0, len(addresses))
+	for _, raw := range addresses {
+		address, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		value := stringValue(address, "value", "")
+		if value != "" {
+			conditions = append(conditions, "Address="+value)
+		}
+	}
+	return conditions
 }
 func addFinding(s *snapshot, severity domain.Status, title, resource, basis, target string) {
 	s.findings = append(s.findings, domain.Finding{ID: fmt.Sprint(len(s.findings) + 1), Severity: severity, Title: title, Resource: resource, Basis: basis, TargetID: target})

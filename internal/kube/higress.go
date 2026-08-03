@@ -80,7 +80,7 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 					key := ingress.Namespace + "/" + service.Name
 					if backend, ok := services[key]; ok {
 						serviceNode := backend.node
-						if backend.readyEndpoints == 0 {
+						if backend.readyEndpoints == 0 && !backend.external {
 							serviceNode.Status = domain.StatusError
 							serviceNode.StatusText = "无 Ready Endpoint"
 							serviceNode.Summary = "Service 没有可用 Endpoint。"
@@ -106,6 +106,7 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 type networkingService struct {
 	node           domain.TopologyNode
 	readyEndpoints int
+	external       bool
 }
 
 func isHigressIngress(ingress *networkingv1.Ingress) bool {

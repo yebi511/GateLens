@@ -30,13 +30,26 @@ type Snapshot struct {
 }
 
 type Topology struct {
-	SnapshotID string         `json:"snapshotID"`
-	ObservedAt string         `json:"observedAt"`
-	Nodes      []TopologyNode `json:"nodes"`
-	Edges      []TopologyEdge `json:"edges"`
-	Truncated  bool           `json:"truncated"`
+	SnapshotID          string            `json:"snapshotID"`
+	FederatedSnapshotID string            `json:"federatedSnapshotID,omitempty"`
+	ObservedAt          string            `json:"observedAt"`
+	Consistency         string            `json:"consistency,omitempty"`
+	Clusters            []TopologyCluster `json:"clusters,omitempty"`
+	Nodes               []TopologyNode    `json:"nodes"`
+	Edges               []TopologyEdge    `json:"edges"`
+	Truncated           bool              `json:"truncated"`
 }
+type TopologyCluster struct {
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Role            string   `json:"role"`
+	Environment     string   `json:"environment,omitempty"`
+	Version         string   `json:"version"`
+	ConnectionState string   `json:"connectionState"`
+	Namespaces      []string `json:"namespaces"`
 
+	Snapshot Snapshot `json:"snapshot"`
+}
 type TopologyNode struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -52,10 +65,13 @@ type TopologyNode struct {
 }
 
 type TopologyEdge struct {
-	From      string `json:"from"`
-	To        string `json:"to"`
-	Relation  string `json:"relation"`
-	Transport string `json:"transport,omitempty"`
+	From        string `json:"from"`
+	To          string `json:"to"`
+	Relation    string `json:"relation"`
+	Transport   string `json:"transport,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	State       string `json:"state,omitempty"`
+	Evidence    string `json:"evidence,omitempty"`
 }
 
 type EnvoyConfig struct {
@@ -203,4 +219,30 @@ type ExplainStep struct {
 	Detail   string `json:"detail"`
 	State    string `json:"state"`
 	TargetID string `json:"targetID"`
+}
+
+type AgentSnapshot struct {
+	Cluster   TopologyCluster `json:"cluster"`
+	Context   Context         `json:"context"`
+	Topology  Topology        `json:"topology"`
+	Findings  []Finding       `json:"findings"`
+	Resources []Resource      `json:"resources"`
+	SentAt    string          `json:"sentAt"`
+}
+
+const AgentCommandEnvoyConfig = "envoy-config"
+
+type AgentCommand struct {
+	ID        string `json:"id"`
+	ClusterID string `json:"clusterID"`
+	Kind      string `json:"kind"`
+	GatewayID string `json:"gatewayID"`
+	Deadline  string `json:"deadline"`
+}
+
+type AgentCommandResult struct {
+	CommandID string       `json:"commandID"`
+	ClusterID string       `json:"clusterID"`
+	Config    *EnvoyConfig `json:"config,omitempty"`
+	Error     string       `json:"error,omitempty"`
 }

@@ -65,10 +65,10 @@ flowchart LR
 | `NamespaceScope` | clusterID, namespace | 避免只用 namespace 字符串识别对象 |
 | Gateway 运行时元数据 | gatewayID, workloadRef, controller, readyReplicas | 合并到对应 Gateway；没有 Gateway API 对象时由 Deployment/Pod 生成规范化 Gateway 节点 |
 | `TransitHop` | id, from, target, transport, destination, evidence, state | 表示集群内外的显式转发边界 |
-| `ClusterLink` | fromCluster, toCluster, discoveryMode, trustState | 声明两个集群的已知连接关系 |
+| 自动关联证据 | outboundTarget, remoteEntry, matchKey, source | 记录出站配置与远端入口配置的唯一匹配，不要求用户维护关联对象 |
 | `FederatedSnapshot` | id, snapshotsByCluster, capturedAt, consistency | 保存一个跨集群查询所使用的快照集合 |
 
-`TransitHop.target` 可以是以下之一：Kubernetes Service、外部 DNS/FQDN、IP/LB 地址、网格网关、手工登记的远端入口。`transport` 记录 HTTP、HTTPS、gRPC、TCP、mTLS 或未知；未从配置或观测中得到的字段必须是 `unknown`。
+`TransitHop.target` 可以是以下之一：Kubernetes Service、外部 DNS/FQDN、IP/LB 地址、网格网关、已采集的远端入口。`transport` 记录 HTTP、HTTPS、gRPC、TCP、mTLS 或未知；未从配置或观测中得到的字段必须是 `unknown`。
 
 ## 有效流量图的表示
 
@@ -123,7 +123,7 @@ flowchart LR
 | 阶段 | 范围 | 结果 |
 | --- | --- | --- |
 | MVP | 单集群拓扑；识别并校验跨命名空间引用；将 FQDN/LB/未知上游显示为外部 `TransitHop` | 不会把跨命名空间或远端目标误画成同命名空间 Endpoint |
-| P1 | 两个只读集群接入；手工或声明式注册 `ClusterLink`；拼接 Higress 到 Istio 入口的多跳图 | 可静态解释已接入两端的配置路径 |
+| P1 | 每集群 Agent 接入中央 Server；按出站目标与远端入口配置自动关联；拼接 Higress 到 Istio 入口的多跳图 | 可静态解释已接入两端的配置路径，歧义匹配只告警不猜测 |
 | P2 | OTel/日志关联、服务发现与网格证据 | 可判断实际请求是否穿越两个网关并定位失败 hop |
 
 ## 需要在阶段 0 验证的真实样本

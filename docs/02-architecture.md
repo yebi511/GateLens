@@ -54,10 +54,10 @@ flowchart LR
 
 Web 和 API 是独立构建、独立运行的部署单元。Go API 只提供 `/api/v1` JSON 与 `/healthz`，不包含静态页面；Vue Web 不复刻路由语义，只展示后端在固定快照上生成的拓扑和解释结果。本地由 Vite 代理 API，生产由 Web 容器的同源反向代理连接内部 API Service。
 
-只有 API 工作负载持有 Kubernetes 只读权限，Web 工作负载无集群访问权限。该边界允许两者独立发布和扩缩容，同时保持浏览器端同源访问。
+每个集群的 Agent 持有该集群的最小只读权限并向中央 Server 上报快照；中央 Server 与 Web 都不持有远端集群凭据。浏览器只访问中央 API。Envoy 等按需运行时查询由 Server 排队，归属集群 Agent 主动长轮询领取并回传结果，Server 不反向连接 Agent。
 ## 部署与扩展
 
-首选单集群内只读 Server + Web UI。后续多集群使用 Agent 或受控 kubeconfig，并以 `tenantID + clusterID` 隔离。
+多集群使用每集群 Agent + 中央 Server。Server 按 `clusterID` 汇总独立快照，并根据已采集的出站目标和 Gateway/Listener 地址自动发现跨集群关系，不接受用户维护的 `ClusterLink`。
 
 RBAC 默认仅需所需 API 组的 `get/list/watch` 和可选观测后端查询权限，不以 cluster-admin 作为安装前提。
 

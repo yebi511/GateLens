@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gatelens/gatelens/internal/agent"
 	"github.com/gatelens/gatelens/internal/api"
 	"github.com/gatelens/gatelens/internal/demo"
+	"github.com/gatelens/gatelens/internal/federation"
 	"github.com/gatelens/gatelens/internal/kube"
 	"github.com/gatelens/gatelens/internal/source"
 )
@@ -20,6 +22,12 @@ type Config struct {
 	Mode           string
 	ClusterID      string
 	AllowedOrigins []string
+	AgentServerURL string
+	AgentToken     string
+	ClusterName    string
+	ClusterRole    string
+	AgentInterval  time.Duration
+	StaleAfter     time.Duration
 }
 
 func ConfigFromEnv() Config {
@@ -35,27 +43,55 @@ func ConfigFromEnv() Config {
 	if clusterID == "" {
 		clusterID = "in-cluster"
 	}
+	clusterName := os.Getenv("GATELENS_CLUSTER_NAME")
+	clusterRole := os.Getenv("GATELENS_CLUSTER_ROLE")
+	agentServerURL := os.Getenv("GATELENS_SERVER_URL")
+	agentToken := os.Getenv("GATELENS_AGENT_TOKEN")
+	agentInterval := durationFromEnv("GATELENS_AGENT_INTERVAL", 30*time.Second)
+	staleAfter := durationFromEnv("GATELENS_STALE_AFTER", 2*time.Minute)
 	allowedOrigins := splitCommaSeparated(os.Getenv("GATELENS_ALLOWED_ORIGINS"))
-	return Config{Address: address, Mode: mode, ClusterID: clusterID, AllowedOrigins: allowedOrigins}
+	return Config{Address: address, Mode: mode, ClusterID: clusterID, ClusterName: clusterName, ClusterRole: clusterRole, AgentServerURL: agentServerURL, AgentToken: agentToken, AgentInterval: agentInterval, StaleAfter: staleAfter, AllowedOrigins: allowedOrigins}
 }
 
 func Run(ctx context.Context, config Config) error {
 	var reader source.Reader
-	if config.Mode == "demo" {
+	var receiver source.SnapshotReceiver
+	var commandBroker source.AgentCommandBroker
+	switch config.Mode {
+	case "demo":
 		reader = demo.NewStore()
-	} else {
+	case "server":
+		hub := federation.NewStore(config.ClusterID, config.StaleAfter)
+		reader, receiver, commandBroker = hub, hub, hub
+	case "agent":
+		store, err := kube.NewInCluster(config.ClusterID)
+		if err != nil {
+			return err
+		}
+		runner, err := agent.New(store, agent.Config{ServerURL: config.AgentServerURL, Token: config.AgentToken, ClusterID: config.ClusterID, ClusterName: config.ClusterName, ClusterRole: config.ClusterRole, Interval: config.AgentInterval})
+		if err != nil {
+			return err
+		}
+		go func() { _ = store.Run(ctx) }()
+		return runner.Run(ctx)
+	case "kubernetes":
 		store, err := kube.NewInCluster(config.ClusterID)
 		if err != nil {
 			return err
 		}
 		reader = store
 		go func() { _ = store.Run(ctx) }()
+	default:
+		return fmt.Errorf("unsupported GATELENS_MODE %q", config.Mode)
 	}
-	server := &http.Server{
-		Addr:              config.Address,
-		Handler:           api.NewHandler(reader, api.WithAllowedOrigins(config.AllowedOrigins...)),
-		ReadHeaderTimeout: 5 * time.Second,
+	handlerOptions := []api.Option{api.WithAllowedOrigins(config.AllowedOrigins...)}
+	if receiver != nil {
+		handlerOptions = append(handlerOptions, api.WithSnapshotReceiver(receiver, config.AgentToken))
 	}
+	if commandBroker != nil {
+		handlerOptions = append(handlerOptions, api.WithAgentCommandBroker(commandBroker, config.AgentToken))
+	}
+	server := &http.Server{Addr: config.Address, Handler: api.NewHandler(reader, handlerOptions...), ReadHeaderTimeout: 5 * time.Second}
 	errorsCh := make(chan error, 1)
 	go func() { errorsCh <- server.ListenAndServe() }()
 	fmt.Printf("GateLens API is available at %s (mode: %s)\n", displayAddress(config.Address), config.Mode)
@@ -87,4 +123,16 @@ func splitCommaSeparated(value string) []string {
 		}
 	}
 	return values
+}
+
+func durationFromEnv(name string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
 }

@@ -22,10 +22,31 @@ export interface TopologyNode {
   source: string
   workloadScope?: string
 }
-export interface TopologyEdge { from: string; to: string; relation: string; transport?: string }
+export interface TopologyCluster {
+  id: string
+  name: string
+  role: string
+  environment?: string
+  version: string
+  connectionState: string
+  namespaces: string[]
+  snapshot: Snapshot
+}
+export interface TopologyEdge {
+  from: string
+  to: string
+  relation: string
+  transport?: string
+  destination?: string
+  state?: string
+  evidence?: string
+}
 export interface Topology {
+  federatedSnapshotID?: string
   snapshotID: string
+  consistency?: string
   observedAt: string
+  clusters?: TopologyCluster[]
   nodes: TopologyNode[]
   edges: TopologyEdge[]
   truncated: boolean

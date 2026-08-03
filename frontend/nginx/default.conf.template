@@ -9,6 +9,7 @@ server {
     }
 
     location /api/ {
+        client_max_body_size 32m;
         proxy_pass ${GATELENS_API_UPSTREAM};
         proxy_http_version 1.1;
         proxy_set_header Host $host;

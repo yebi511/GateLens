@@ -36,6 +36,8 @@ async function getTopology(): Promise<Topology> {
   value.nodes ??= []
   value.edges ??= []
   for (const node of value.nodes) node.conditions ??= []
+  value.clusters ??= []
+  for (const cluster of value.clusters) cluster.namespaces ??= []
   return value
 }
 async function getEnvoy(gatewayID: string): Promise<EnvoyConfig> {

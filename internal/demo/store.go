@@ -19,7 +19,7 @@ func NewStore() *Store {
 	snapshot := domain.Snapshot{ID: "snapshot-prod-20260724-104218", ObservedAt: "2026-07-24T10:42:18+08:00", State: "complete"}
 	return &Store{
 		context:  domain.Context{Cluster: domain.Cluster{ID: "edge-prod", Name: "prod-cn-shanghai", Version: "Kubernetes 1.31"}, Namespaces: []string{"all", "higress-system", "ai-platform", "inference"}, Snapshot: snapshot, Capabilities: []string{"gateway-api", "higress", "inference-extension", "transit-hop"}},
-		topology: domain.Topology{SnapshotID: snapshot.ID, ObservedAt: snapshot.ObservedAt, Nodes: demoNodes(), Edges: demoEdges()},
+		topology: domain.Topology{SnapshotID: snapshot.ID, FederatedSnapshotID: "federated-prod-20260724-104218", ObservedAt: snapshot.ObservedAt, Consistency: "consistent-window", Clusters: demoClusters(snapshot), Nodes: demoNodes(), Edges: demoEdges()},
 		findings: []domain.Finding{
 			{ID: "no-ready-endpoints", Severity: domain.StatusError, Title: "后端没有可用 Endpoint", Resource: "Service / inference/embedding-backend", Basis: "ReadyEndpoints=0", TargetID: "service-embedding"},
 			{ID: "excluded-endpoint", Severity: domain.StatusWarning, Title: "Endpoint 被推理池排除", Resource: "Endpoint / inference/qwen-72b-c", Basis: "readiness=false", TargetID: "endpoint-qwen-c"},
@@ -80,6 +80,13 @@ func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExpl
 	return base
 }
 
+func demoClusters(edgeSnapshot domain.Snapshot) []domain.TopologyCluster {
+	gpuSnapshot := domain.Snapshot{ID: "snapshot-gpu-prod-20260724-104246", ObservedAt: "2026-07-24T10:42:46+08:00", State: "complete"}
+	return []domain.TopologyCluster{
+		{ID: "edge-prod", Name: "prod-cn-shanghai", Role: "ingress-gateway", Environment: "production", Version: "Kubernetes 1.31", ConnectionState: "connected", Namespaces: []string{"higress-system", "ai-platform", "inference"}, Snapshot: edgeSnapshot},
+		{ID: "gpu-prod", Name: "prod-cn-shanghai-gpu", Role: "gpu-inference", Environment: "production", Version: "Kubernetes 1.30", ConnectionState: "connected", Namespaces: []string{"istio-system", "inference"}, Snapshot: gpuSnapshot},
+	}
+}
 func demoNodes() []domain.TopologyNode {
 	return []domain.TopologyNode{
 		{ID: "gateway-public", Name: "ai-public-gateway", Kind: "Gateway", Namespace: "ai-platform", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "已接受", Summary: "面向公网 API 的 Gateway，由 Higress 工作负载处理。", Conditions: []string{"Accepted=True", "Programmed=True", "EnvoyConfig=available", "Controller=higress.io/gateway-controller", "Workload=higress-system/higress-gateway", "ReadyReplicas=3"}, Source: "gateway.networking.k8s.io/v1 Gateway", WorkloadScope: "higress-system"},
@@ -92,10 +99,24 @@ func demoNodes() []domain.TopologyNode {
 		{ID: "endpoint-qwen-b", Name: "qwen-72b-b", Kind: "Endpoint", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct 副本 B。", Conditions: []string{"Ready=True", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
 		{ID: "endpoint-qwen-c", Name: "qwen-72b-c", Kind: "Endpoint", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "NotReady", Summary: "readiness=false，已从候选集中排除。", Conditions: []string{"Ready=False", "Excluded=True"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
 		{ID: "transit-inference", Name: "inference-gw.example", Kind: "TransitHop", Namespace: "", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "远端未接入", Summary: "独立推理集群的 Istio IngressGateway 边界。只知道 HTTPS+mTLS 目标，尚未接入远端配置。", Conditions: []string{"Transport=HTTPS+mTLS", "RemoteCluster=unknown"}, Source: "Higress upstream configuration"},
+		{ID: "gpu-ingress", Name: "inference-ingress", Kind: "Gateway", Namespace: "istio-system", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Connected", Summary: "Istio ingress gateway for traffic from the edge cluster.", Conditions: []string{"Programmed=True", "mTLS=STRICT", "ReadyReplicas=3"}, Source: "networking.istio.io/v1 Gateway", WorkloadScope: "gpu-prod/istio-system"},
+		{ID: "gpu-listener", Name: "https-inference", Kind: "Listener", Namespace: "istio-system", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Accepted", Summary: "TLS listener for the registered inference ingress endpoint.", Conditions: []string{"Protocol=HTTPS", "TLS=PASSTHROUGH"}, Source: "Istio Gateway server"},
+		{ID: "gpu-route-chat", Name: "qwen-chat", Kind: "HTTPRoute", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Resolved", Summary: "Maps chat API traffic to the Qwen inference service.", Conditions: []string{"ResolvedRefs=True", "Evidence=configuration"}, Source: "networking.istio.io/v1 VirtualService"},
+		{ID: "gpu-service-qwen", Name: "qwen-72b-server", Kind: "Service", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "2 Ready", Summary: "GPU inference service for qwen2.5-72b-instruct.", Conditions: []string{"ReadyEndpoints=2"}, Source: "v1 Service"},
+		{ID: "gpu-pool-qwen", Name: "qwen-production", Kind: "InferencePool", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "2/3 Ready", Summary: "Model candidate pool; one endpoint is excluded by readiness.", Conditions: []string{"Resolved=True", "AvailableEndpoints=2/3"}, Source: "inference.networking.k8s.io/v1 InferencePool"},
+		{ID: "gpu-endpoint-qwen-a", Name: "qwen-72b-a", Kind: "Endpoint", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct replica on gpu-a100-01.", Conditions: []string{"Ready=True", "GPU=A100-80G", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
+		{ID: "gpu-endpoint-qwen-b", Name: "qwen-72b-b", Kind: "Endpoint", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct replica on gpu-a100-02.", Conditions: []string{"Ready=True", "GPU=A100-80G", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
 	}
 }
 func demoEdges() []domain.TopologyEdge {
-	return []domain.TopologyEdge{{From: "gateway-public", To: "listener-https", Relation: "owns"}, {From: "listener-https", To: "route-chat", Relation: "attaches"}, {From: "listener-https", To: "route-embeddings", Relation: "attaches"}, {From: "route-chat", To: "pool-qwen", Relation: "routes"}, {From: "route-embeddings", To: "service-embedding", Relation: "routes"}, {From: "pool-qwen", To: "endpoint-qwen-a", Relation: "selects"}, {From: "pool-qwen", To: "endpoint-qwen-b", Relation: "selects"}, {From: "pool-qwen", To: "endpoint-qwen-c", Relation: "excludes"}, {From: "route-chat", To: "transit-inference", Relation: "transit", Transport: "HTTPS+mTLS"}}
+	return []domain.TopologyEdge{
+		{From: "gateway-public", To: "listener-https", Relation: "owns"}, {From: "listener-https", To: "route-chat", Relation: "attaches"}, {From: "listener-https", To: "route-embeddings", Relation: "attaches"},
+		{From: "route-chat", To: "transit-inference", Relation: "transit", Transport: "HTTPS + mTLS", Destination: "inference-gw.example", State: "verified", Evidence: "Higress upstream and TLS policy"},
+		{From: "transit-inference", To: "gpu-ingress", Relation: "cross-cluster", Transport: "HTTPS + mTLS", Destination: "gpu-prod/istio-system/inference-ingress", State: "resolved", Evidence: "configuration target inference-gw.example matched remote Gateway address"},
+		{From: "gpu-ingress", To: "gpu-listener", Relation: "owns"}, {From: "gpu-listener", To: "gpu-route-chat", Relation: "attaches"}, {From: "gpu-route-chat", To: "gpu-service-qwen", Relation: "routes"}, {From: "gpu-service-qwen", To: "gpu-pool-qwen", Relation: "selects"},
+		{From: "gpu-pool-qwen", To: "gpu-endpoint-qwen-a", Relation: "selects"}, {From: "gpu-pool-qwen", To: "gpu-endpoint-qwen-b", Relation: "selects"},
+		{From: "route-embeddings", To: "service-embedding", Relation: "routes"}, {From: "pool-qwen", To: "endpoint-qwen-a", Relation: "selects"}, {From: "pool-qwen", To: "endpoint-qwen-b", Relation: "selects"}, {From: "pool-qwen", To: "endpoint-qwen-c", Relation: "excludes"},
+	}
 }
 
 func envoyConfig(snapshot domain.Snapshot) domain.EnvoyConfig {

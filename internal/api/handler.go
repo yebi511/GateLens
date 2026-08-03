@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,8 +12,11 @@ import (
 )
 
 type Handler struct {
-	store          source.Reader
-	allowedOrigins map[string]struct{}
+	store            source.Reader
+	allowedOrigins   map[string]struct{}
+	snapshotReceiver source.SnapshotReceiver
+	agentCommands    source.AgentCommandBroker
+	agentToken       string
 }
 
 type Option func(*Handler)
@@ -25,6 +29,20 @@ func WithAllowedOrigins(origins ...string) Option {
 				h.allowedOrigins[origin] = struct{}{}
 			}
 		}
+	}
+}
+
+func WithSnapshotReceiver(receiver source.SnapshotReceiver, token string) Option {
+	return func(h *Handler) {
+		h.snapshotReceiver = receiver
+		h.agentToken = token
+	}
+}
+
+func WithAgentCommandBroker(broker source.AgentCommandBroker, token string) Option {
+	return func(h *Handler) {
+		h.agentCommands = broker
+		h.agentToken = token
 	}
 }
 
@@ -44,6 +62,9 @@ func NewHandler(store source.Reader, options ...Option) http.Handler {
 	mux.HandleFunc("GET /api/v1/health/findings", h.findings)
 	mux.HandleFunc("POST /api/v1/route-explanations", h.explain)
 	mux.HandleFunc("/", h.notFound)
+	mux.HandleFunc("POST /api/v1/agent/snapshots", h.receiveSnapshot)
+	mux.HandleFunc("GET /api/v1/agent/commands/next", h.nextAgentCommand)
+	mux.HandleFunc("POST /api/v1/agent/command-results", h.completeAgentCommand)
 	return logging(cors(mux, h.allowedOrigins))
 }
 
@@ -93,6 +114,93 @@ func (h *Handler) explain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, h.store.Explain(request))
+}
+func (h *Handler) receiveSnapshot(w http.ResponseWriter, r *http.Request) {
+	if h.snapshotReceiver == nil {
+		writeError(w, http.StatusNotFound, "snapshot receiver is not enabled")
+		return
+	}
+	if !h.authorizeAgent(w, r) {
+		return
+	}
+	defer r.Body.Close()
+	var snapshot domain.AgentSnapshot
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 16<<20))
+	if err := decoder.Decode(&snapshot); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid agent snapshot")
+		return
+	}
+	if err := h.snapshotReceiver.ReceiveSnapshot(r.Context(), snapshot); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"clusterID":  snapshot.Cluster.ID,
+		"snapshotID": snapshot.Topology.SnapshotID,
+		"status":     "accepted",
+	})
+}
+func (h *Handler) nextAgentCommand(w http.ResponseWriter, r *http.Request) {
+	if h.agentCommands == nil {
+		writeError(w, http.StatusNotFound, "agent command broker is not enabled")
+		return
+	}
+	if !h.authorizeAgent(w, r) {
+		return
+	}
+	clusterID := strings.TrimSpace(r.URL.Query().Get("clusterID"))
+	if clusterID == "" {
+		writeError(w, http.StatusBadRequest, "clusterID is required")
+		return
+	}
+	command, ok, err := h.agentCommands.NextAgentCommand(r.Context(), clusterID)
+	if err != nil {
+		if r.Context().Err() == nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	if !ok {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, command)
+}
+
+func (h *Handler) completeAgentCommand(w http.ResponseWriter, r *http.Request) {
+	if h.agentCommands == nil {
+		writeError(w, http.StatusNotFound, "agent command broker is not enabled")
+		return
+	}
+	if !h.authorizeAgent(w, r) {
+		return
+	}
+	defer r.Body.Close()
+	var result domain.AgentCommandResult
+	if err := json.NewDecoder(io.LimitReader(r.Body, 32<<20)).Decode(&result); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid agent command result")
+		return
+	}
+	if err := h.agentCommands.CompleteAgentCommand(r.Context(), result); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{
+		"commandID": result.CommandID,
+		"status":    "accepted",
+	})
+}
+
+func (h *Handler) authorizeAgent(w http.ResponseWriter, r *http.Request) bool {
+	if h.agentToken == "" {
+		return true
+	}
+	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(h.agentToken)) == 1 {
+		return true
+	}
+	writeError(w, http.StatusUnauthorized, "invalid agent credentials")
+	return false
 }
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

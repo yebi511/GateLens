@@ -70,9 +70,11 @@ deploy: ## Apply manifests and roll out the selected API and Web images.
 	$(KUBECTL) apply -f deploy/kubernetes.yaml
 	$(KUBECTL) -n gatelens-system set image deployment/gatelens-api api=$(API_IMAGE)
 	$(KUBECTL) -n gatelens-system set image deployment/gatelens-web web=$(WEB_IMAGE)
+	$(KUBECTL) -n gatelens-system set image deployment/gatelens-agent agent=$(API_IMAGE)
 	$(KUBECTL) -n gatelens-system rollout status deployment/gatelens-api
 	$(KUBECTL) -n gatelens-system rollout status deployment/gatelens-web
 
+	$(KUBECTL) -n gatelens-system rollout status deployment/gatelens-agent
 undeploy: ## Remove the GateLens Kubernetes resources.
 	$(KUBECTL) delete -f deploy/kubernetes.yaml
 

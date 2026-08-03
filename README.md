@@ -6,7 +6,7 @@
 
 <p align="center"><strong>AI Gateway Explainability Platform</strong><br>让 AI 网关的配置、流量路径和故障原因变得可见。</p>
 
-> GateLens 当前处于早期开发阶段。现有版本支持单 Kubernetes 集群、多命名空间的 Gateway API 拓扑与静态请求解释，尚不应作为生产变更或自动修复系统使用。
+> GateLens 当前处于早期开发阶段。现有版本支持由每集群 Agent 汇总的多集群拓扑与静态配置关联，尚不应作为生产变更或自动修复系统使用。
 
 ## 概述
 
@@ -16,18 +16,18 @@ GateLens 以只读方式监听 Kubernetes 资源，构建带来源证据的有�
 
 ## 当前能力
 
-- 监听单集群中的 Namespace、Service 与 EndpointSlice。
+- 每个集群由只读 Agent 监听 Namespace、Service、EndpointSlice 与网关配置，中央 Server 汇总快照。
 - 动态监听 Gateway API `Gateway`、`HTTPRoute` 与 `ReferenceGrant`。
 - 监听 `IngressClass=higress` 及 Higress `McpBridge` 与 registry 配置。
 - 展示 Gateway、Listener、HTTPRoute/Ingress、Service/McpBridge 与 Endpoint/Registry 的跨命名空间拓扑。
 - 校验 ParentRef、BackendRef、ReferenceGrant 和 Ready Endpoint。
 - 根据 Host、Path 与 Method 对请求进行静态解释。
 - 提供资源搜索、配置健康清单和快照上下文。
-- 自动定位网关的 Ready Pod，通过临时 port-forward 读取 Envoy `/config_dump`。
+- 自动定位网关的 Ready Pod；联邦模式由归属集群 Agent 主动领取查询，并通过临时 port-forward 读取 Envoy `/config_dump`。
 - 聚合 Wasm、`ext_proc` 和其他 Envoy Filter 的运行时挂载点，并关联 ECDS、Wasm 模块和上游 Cluster。
 - 使用最小只读 RBAC，不修改集群资源，也不代理业务请求。
 
-当前尚未实现 Higress/Istio 专有 CRD 的完整语义、多集群联邦拓扑、Trace/日志关联和实际流量确认。请求模拟属于**按快照推断**，不等同于真实请求已经经过该路径。
+当前尚未实现 Higress/Istio 专有 CRD 的完整语义、Trace/日志关联和实际流量确认。跨集群边来自出站目标与远端入口配置的唯一精确匹配；请求模拟属于**按快照推断**，不等同于真实请求已经经过该路径。
 
 ## 架构
 
@@ -103,23 +103,70 @@ make image-push \
 
 网络受限环境可通过 `GOPROXY` 覆盖 API 镜像的 Go 模块代理。
 
+## 部署中央 Server 和 Web 到 Docker
+
+Docker 主机需要安装 Docker Engine；推荐使用 Docker Compose v2，脚本也兼容旧的
+`docker-compose` 独立命令。仓库根目录执行：
+
+```bash
+sh deploy/docker-server.sh up
+```
+
+脚本只使用已有的 `gatelens-api` 与 `gatelens-web` 镜像，不会在部署机上
+构建镜像；本地不存在时由 Compose 从配置的镜像仓库拉取。首次运行还会生成
+`deploy/docker.env`，其中包含镜像地址和随机的 `GATELENS_AGENT_TOKEN`。
+该文件已被 `.gitignore` 排除，不应提交到仓库。
+
+默认访问地址为 `http://<Docker 主机>:8080`。只有 Web 的 8080 端口对外暴露；
+Web 会把浏览器请求和 Agent 的 `/api/` 请求转发到 Docker 内部的中央 Server。
+因此各 Kubernetes 集群 Agent 应配置：
+
+```yaml
+- name: GATELENS_SERVER_URL
+  value: "http://<Docker 主机>:8080"
+- name: GATELENS_AGENT_TOKEN
+  valueFrom:
+    secretKeyRef: {name: gatelens-agent-auth, key: token}
+```
+
+每个 Agent 集群中的 Secret token 必须与 `deploy/docker.env` 中的值一致。
+跨主机或生产部署应在 Web 前增加 HTTPS 反向代理，并将
+`GATELENS_SERVER_URL` 改为对应的 HTTPS 地址。
+
+常用管理命令：
+
+```bash
+sh deploy/docker-server.sh status
+sh deploy/docker-server.sh logs
+sh deploy/docker-server.sh restart
+sh deploy/docker-server.sh down
+```
+
+监听地址、端口、镜像名和 stale 阈值可参考
+`deploy/docker.env.example`，在首次启动前写入 `deploy/docker.env`。
+
 ## 部署到 Kubernetes
 
 前置条件：
 
-- 集群已安装 Gateway API CRD。
-- 当前版本读取 `gateway.networking.k8s.io/v1` 的 Gateway/HTTPRoute，以及 `v1beta1` 的 ReferenceGrant。
+- Gateway API CRD 是可选的；未安装时 Agent 仍会汇总核心 Kubernetes 资源，安装后可提供 Gateway API 拓扑。
+- 若已安装，当前版本读取 `gateway.networking.k8s.io/v1` 的 Gateway/HTTPRoute，以及 `v1beta1` 的 ReferenceGrant。
 - 若要采集 Higress 配置，集群还需安装 `networking.higress.io/v1` McpBridge CRD。
 - API 与 Web 镜像已推送到集群可访问的仓库。
 
 ```bash
+kubectl create namespace gatelens-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n gatelens-system create secret generic gatelens-agent-auth \
+  --from-literal=token="$GATELENS_AGENT_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
 make deploy \
   API_IMAGE=registry.example.com/platform/gatelens-api:v0.1.0 \
   WEB_IMAGE=registry.example.com/platform/gatelens-web:v0.1.0
 kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 ```
 
-访问 <http://localhost:8080>。`gatelens` Service 指向 Web，Web 在集群内通过 `gatelens-api:8080` 访问 API。只有 `gatelens-api` ServiceAccount 拥有 Kubernetes 只读权限，Web Pod 没有集群读取权限。
+访问 <http://localhost:8080>。`gatelens` Service 指向 Web，Web 只访问中央 `gatelens-api`。入口集群的 `gatelens-agent` 持有只读权限并上报快照，中央 Server 和 Web 不持有集群读取权限。
+
+远端 GPU 集群使用 `deploy/agent.yaml`：修改其中的 `GATELENS_CLUSTER_ID`、`GATELENS_CLUSTER_NAME` 和 `GATELENS_SERVER_URL`，在远端创建同值的 `gatelens-agent-auth` Secret 后应用清单。无需配置 `ClusterLink`。
 
 ## 配置
 
@@ -128,9 +175,15 @@ kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `GATELENS_ADDR` | `:8080` | API HTTP 监听地址 |
-| `GATELENS_MODE` | `kubernetes` | `kubernetes` 使用 in-cluster 配置；`demo` 使用内置数据 |
+| `GATELENS_MODE` | `kubernetes` | `server` 汇总 Agent 快照；`agent` 采集本集群并上报；`kubernetes` 为单集群兼容模式；`demo` 使用内置数据 |
 | `GATELENS_CLUSTER_ID` | `in-cluster` | 拓扑和快照中的集群标识 |
 | `GATELENS_ALLOWED_ORIGINS` | 空 | 允许直接跨域调用 API 的 Origin，多个值用逗号分隔 |
+| `GATELENS_CLUSTER_NAME` | cluster ID | Agent 上报的集群显示名 |
+| `GATELENS_CLUSTER_ROLE` | `member` | Agent 上报的集群角色，例如 `ingress-gateway` 或 `gpu-inference` |
+| `GATELENS_SERVER_URL` | 空 | Agent 上报快照的中央 Server 地址；`agent` 模式必填 |
+| `GATELENS_AGENT_TOKEN` | 空 | Server 接收快照和 Agent 上传时使用的共享 Bearer token |
+| `GATELENS_AGENT_INTERVAL` | `30s` | Agent 快照上报周期 |
+| `GATELENS_STALE_AFTER` | `2m` | Server 将未更新 Agent 标记为 stale 的阈值 |
 
 ### Web
 
@@ -151,6 +204,9 @@ kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 | `GET /api/v1/resources?q=` | 搜索当前快照资源 |
 | `GET /api/v1/health/findings` | 配置健康问题 |
 | `POST /api/v1/route-explanations` | 按快照解释请求匹配和后端状态 |
+| `POST /api/v1/agent/snapshots` | Agent 向中央 Server 上报集群快照 |
+| `GET /api/v1/agent/commands/next?clusterID=` | Agent 长轮询领取本集群运行时查询 |
+| `POST /api/v1/agent/command-results` | Agent 向中央 Server 回传运行时查询结果 |
 
 ## 项目结构
 
@@ -158,6 +214,8 @@ kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 cmd/gatelens/        API 进程入口
 internal/api/        纯 JSON HTTP API
 internal/kube/       Kubernetes informer、快照和解析
+internal/agent/      每集群快照上报器
+internal/federation/ 中央快照汇总和自动关联
 internal/domain/     通用领域模型
 internal/demo/       本地演示数据源
 frontend/            Vue 3 + TypeScript 独立前端
