@@ -100,7 +100,7 @@ func (s *Store) Run(ctx context.Context) error {
 	}
 
 	allInformers := []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, pods, deployments}
-	synced := []cache.InformerSynced{services.HasSynced, endpoints.HasSynced, namespaces.HasSynced, ingresses.HasSynced, pods.HasSynced, deployments.HasSynced}
+	coreSynced := []cache.InformerSynced{services.HasSynced, endpoints.HasSynced, namespaces.HasSynced}
 	addDynamicInformer := func(resource schema.GroupVersionResource, storeIndex int) {
 		if !available[resource] {
 			return
@@ -108,7 +108,6 @@ func (s *Store) Run(ctx context.Context) error {
 		informer := dynamicFactory.ForResource(resource).Informer()
 		stores[storeIndex] = informer.GetStore()
 		allInformers = append(allInformers, informer)
-		synced = append(synced, informer.HasSynced)
 	}
 	addDynamicInformer(gatewaysGVR, 3)
 	addDynamicInformer(routesGVR, 4)
@@ -142,7 +141,7 @@ func (s *Store) Run(ctx context.Context) error {
 	if len(allInformers) > 6 {
 		dynamicFactory.Start(ctx.Done())
 	}
-	if !cache.WaitForCacheSync(ctx.Done(), synced...) {
+	if !cache.WaitForCacheSync(ctx.Done(), coreSynced...) {
 		return fmt.Errorf("synchronize Kubernetes informers")
 	}
 	close(ready)
@@ -327,6 +326,9 @@ func (s *Store) rebuild(stores ...cache.Store) {
 				snap.routes = append(snap.routes, normalized)
 			}
 		}
+	}
+	if ingressStore != nil {
+		s.addIngressEntryResources(&snap, ingressStore.List())
 	}
 	if ingressStore != nil && mcpBridgeStore != nil {
 		serviceRefs := map[string]*networkingService{}

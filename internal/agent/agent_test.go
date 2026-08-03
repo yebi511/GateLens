@@ -10,7 +10,13 @@ import (
 
 	"github.com/gatelens/gatelens/internal/demo"
 	"github.com/gatelens/gatelens/internal/domain"
+	"github.com/gatelens/gatelens/internal/source"
 )
+
+type notReadyReader struct{ source.Reader }
+
+func (notReadyReader) Context() domain.Context   { return domain.Context{} }
+func (notReadyReader) Topology() domain.Topology { return domain.Topology{} }
 
 func TestSendOnceUploadsSnapshotWithCredentials(t *testing.T) {
 	received := make(chan domain.AgentSnapshot, 1)
@@ -52,6 +58,34 @@ func TestSendOnceUploadsSnapshotWithCredentials(t *testing.T) {
 func TestNewRequiresServerURL(t *testing.T) {
 	if _, err := New(demo.NewStore(), Config{ClusterID: "test"}); err == nil {
 		t.Fatal("expected missing server URL error")
+	}
+}
+
+func TestRunDoesNotPollCommandsBeforeFirstSnapshot(t *testing.T) {
+	requests := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case requests <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	runner, err := New(notReadyReader{}, Config{ServerURL: server.URL, ClusterID: "gpu-prod", Interval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := runner.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-requests:
+		t.Fatal("agent sent an HTTP request before its first local snapshot was ready")
+	default:
 	}
 }
 

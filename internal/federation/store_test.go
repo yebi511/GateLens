@@ -64,6 +64,65 @@ func TestDiscoverLinksDoesNotGuessAmbiguousEntry(t *testing.T) {
 	}
 }
 
+func TestDiscoverLinksMatchesSelectedHigressMCPBridgeRegistryToGateway(t *testing.T) {
+	nodes := []domain.TopologyNode{
+		{
+			ID: "edge::ingress/higress-system/model-route", ClusterID: "edge", Kind: "Ingress", Name: "model-route", Namespace: "higress-system",
+			Conditions: []string{"higress.io/destination=inference.dns", "higress.io/backend-protocol=HTTPS"},
+			Source:     "networking.k8s.io/v1 Ingress",
+		},
+		{
+			ID: "edge::mcpbridge/higress-system/default/registry/inference", ClusterID: "edge", Kind: "Registry", Name: "inference", Namespace: "higress-system",
+			Conditions: []string{"Type=dns", "Domain=https://inference-gw.example:8443", "Port=8443"},
+			Source:     "McpBridge.spec.registries",
+		},
+		{
+			ID: "gpu::gateway/istio-system/inference-gateway", ClusterID: "gpu", Kind: "Gateway", Name: "inference-gateway", Namespace: "istio-system",
+			Conditions: []string{"Address=inference-gw.example"}, Source: "gateway.networking.k8s.io/v1 Gateway.status.addresses",
+		},
+	}
+	existing := []domain.TopologyEdge{{
+		From: "edge::ingress/higress-system/model-route",
+		To:   "edge::mcpbridge/higress-system/default/registry/inference", Relation: "selects",
+	}}
+
+	links, findings := discoverLinks(nodes, existing)
+	if len(findings) != 0 || len(links) != 1 {
+		t.Fatalf("links=%#v findings=%#v", links, findings)
+	}
+	link := links[0]
+	if link.From != nodes[1].ID || link.To != nodes[2].ID || link.Transport != "HTTPS" {
+		t.Fatalf("link=%#v", link)
+	}
+	if !strings.Contains(link.Evidence, "higress-mcpbridge") || !strings.Contains(link.Evidence, "edge/higress-system/model-route") {
+		t.Fatalf("evidence=%q", link.Evidence)
+	}
+}
+
+func TestDiscoverLinksMatchesDeclaredMCPBridgeRegistryToIngress(t *testing.T) {
+	nodes := []domain.TopologyNode{
+		{
+			ID: "edge::mcpbridge/higress-system/default/registry/inference", ClusterID: "edge", Kind: "Registry", Name: "inference", Namespace: "higress-system",
+			Conditions: []string{"Type=dns", "Domain=inference-gateway.infra-prd.sail-cloud.com", "Port=80", "Protocol=http"}, Source: "McpBridge.spec.registries",
+		},
+		{
+			ID: "gpu::ingress/inference/inference-gateway-ingress", ClusterID: "gpu", Kind: "Ingress", Name: "inference-gateway-ingress", Namespace: "inference",
+			Conditions: []string{"IngressClass=nginx", "Hostname=inference-gateway.infra-prd.sail-cloud.com"}, Source: "networking.k8s.io/v1 Ingress",
+		},
+	}
+
+	links, findings := discoverLinks(nodes, nil)
+	if len(links) != 1 || len(findings) != 0 {
+		t.Fatalf("links=%#v findings=%#v", links, findings)
+	}
+	if links[0].From != nodes[0].ID || links[0].To != nodes[1].ID || links[0].Transport != "http" {
+		t.Fatalf("link=%#v", links[0])
+	}
+	if !strings.Contains(links[0].Evidence, "declared upstream") || !strings.Contains(links[0].Evidence, "inference-gateway-ingress") {
+		t.Fatalf("evidence=%q", links[0].Evidence)
+	}
+}
+
 func TestStoreReportsTimeSkewAndStaleAgents(t *testing.T) {
 	now := time.Date(2026, 7, 28, 8, 0, 0, 0, time.UTC)
 	store := NewStore("edge", 2*time.Minute)

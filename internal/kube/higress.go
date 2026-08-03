@@ -40,9 +40,14 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 			registryType := stringValue(registry, "type", "unknown")
 			domainName := stringValue(registry, "domain", "")
 			port := fmt.Sprint(registry["port"])
+			protocol := stringValue(registry, "protocol", "")
 			registryID := id + "/registry/" + name
 			registryIDs[bridgeKey][name+"."+registryType] = registryID
-			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: registryID, Name: name, Kind: "Registry", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: registryType + "://" + domainName + ":" + port, Conditions: []string{"Type=" + registryType, "Domain=" + domainName, "Port=" + port}, Source: "McpBridge.spec.registries"})
+			conditions := []string{"Type=" + registryType, "Domain=" + domainName, "Port=" + port}
+			if protocol != "" {
+				conditions = append(conditions, "Protocol="+protocol)
+			}
+			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: registryID, Name: name, Kind: "Registry", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: registryType + "://" + domainName + ":" + port, Conditions: conditions, Source: "McpBridge.spec.registries"})
 			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: id, To: registryID, Relation: "discovers"})
 		}
 	}
@@ -53,7 +58,8 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 			continue
 		}
 		ingressID := "ingress/" + ingress.Namespace + "/" + ingress.Name
-		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: ingressID, Name: ingress.Name, Kind: "Ingress", Namespace: ingress.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: "Higress Ingress 路由。", Conditions: annotationConditions(ingress.Annotations), Source: "networking.k8s.io/v1 Ingress"})
+		conditions := append(annotationConditions(ingress.Annotations), ingressEntryConditions(ingress)...)
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: ingressID, Name: ingress.Name, Kind: "Ingress", Namespace: ingress.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: "Higress Ingress 路由。", Conditions: conditions, Source: "networking.k8s.io/v1 Ingress"})
 		for _, rule := range ingress.Spec.Rules {
 			if rule.HTTP == nil {
 				continue
@@ -107,6 +113,46 @@ type networkingService struct {
 	node           domain.TopologyNode
 	readyEndpoints int
 	external       bool
+}
+
+func (s *Store) addIngressEntryResources(snap *snapshot, items []any) {
+	for _, item := range items {
+		ingress, ok := item.(*networkingv1.Ingress)
+		if !ok || isHigressIngress(ingress) {
+			continue
+		}
+		conditions := ingressEntryConditions(ingress)
+		if len(conditions) == 0 {
+			continue
+		}
+		id := "ingress/" + ingress.Namespace + "/" + ingress.Name
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
+			ID: id, Name: ingress.Name, Kind: "Ingress", Namespace: ingress.Namespace,
+			ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现",
+			Summary: "Kubernetes Ingress 入口。", Conditions: conditions, Source: "networking.k8s.io/v1 Ingress",
+		})
+	}
+}
+
+func ingressEntryConditions(ingress *networkingv1.Ingress) []string {
+	var result []string
+	if ingress.Spec.IngressClassName != nil && *ingress.Spec.IngressClassName != "" {
+		result = append(result, "IngressClass="+*ingress.Spec.IngressClassName)
+	}
+	for _, rule := range ingress.Spec.Rules {
+		if host := strings.TrimSpace(rule.Host); host != "" {
+			result = append(result, "Hostname="+host)
+		}
+	}
+	for _, address := range ingress.Status.LoadBalancer.Ingress {
+		if address.IP != "" {
+			result = append(result, "Address="+address.IP)
+		}
+		if address.Hostname != "" {
+			result = append(result, "Address="+address.Hostname)
+		}
+	}
+	return result
 }
 
 func isHigressIngress(ingress *networkingv1.Ingress) bool {

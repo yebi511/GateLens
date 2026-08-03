@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,26 +52,31 @@ func New(reader source.Reader, config Config) (*Runner, error) {
 }
 
 func (r *Runner) Run(ctx context.Context) error {
-	go r.runCommands(ctx)
-	ticker := time.NewTicker(r.config.Interval)
-	defer ticker.Stop()
+	commandsStarted := false
 	for {
-		if err := r.SendOnce(ctx); err != nil && ctx.Err() == nil {
+		delay := r.config.Interval
+		err := r.SendOnce(ctx)
+		if err == nil && !commandsStarted {
+			commandsStarted = true
+			go r.runCommands(ctx)
+		} else if errors.Is(err, errLocalSnapshotNotReady) {
+			delay = snapshotReadyRetryDelay
+		} else if err != nil && ctx.Err() == nil {
 			fmt.Printf("GateLens agent snapshot upload failed: %v\n", err)
 		}
-		select {
-		case <-ctx.Done():
+		if !waitForRetry(ctx, delay) {
 			return nil
-		case <-ticker.C:
 		}
 	}
 }
+
+var errLocalSnapshotNotReady = errors.New("local snapshot is not ready")
 
 func (r *Runner) SendOnce(ctx context.Context) error {
 	localContext := r.reader.Context()
 	topology := r.reader.Topology()
 	if topology.SnapshotID == "" || localContext.Snapshot.ID == "" {
-		return fmt.Errorf("local snapshot is not ready")
+		return errLocalSnapshotNotReady
 	}
 	cluster := domain.TopologyCluster{ID: r.config.ClusterID, Name: r.config.ClusterName, Role: r.config.ClusterRole, Version: localContext.Cluster.Version, ConnectionState: "connected", Namespaces: append([]string(nil), localContext.Namespaces...), Snapshot: localContext.Snapshot}
 	payload := domain.AgentSnapshot{Cluster: cluster, Context: localContext, Topology: topology, Findings: r.reader.Findings(), Resources: r.reader.Resources(""), SentAt: time.Now().UTC().Format(time.RFC3339)}
@@ -99,6 +105,7 @@ func (r *Runner) SendOnce(ctx context.Context) error {
 }
 
 const (
+	snapshotReadyRetryDelay  = 2 * time.Second
 	commandRetryDelay        = 2 * time.Second
 	maxCommandPollRetryDelay = 30 * time.Second
 )

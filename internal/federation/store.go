@@ -403,45 +403,7 @@ type linkCandidate struct {
 }
 
 func discoverLinks(nodes []domain.TopologyNode, existing []domain.TopologyEdge) ([]domain.TopologyEdge, []domain.Finding) {
-	var outbound, entries []linkCandidate
-	for _, node := range nodes {
-		if keys := outboundKeys(node); len(keys) > 0 {
-			outbound = append(outbound, linkCandidate{node: node, keys: keys})
-		}
-		if keys := entryKeys(node); len(keys) > 0 {
-			rank := 1
-			if node.Kind == "Listener" {
-				rank = 0
-			}
-			entries = append(entries, linkCandidate{node: node, keys: keys, rank: rank, evidence: entryEvidence(node)})
-		}
-	}
-	var links []domain.TopologyEdge
-	var findings []domain.Finding
-	for _, from := range outbound {
-		bestRank := 99
-		var matches []linkCandidate
-		matchedKey := ""
-		for _, to := range entries {
-			if from.node.ClusterID == to.node.ClusterID || edgeExists(existing, from.node.ID, to.node.ID) {
-				continue
-			}
-			if key, ok := intersect(from.keys, to.keys); ok {
-				if to.rank < bestRank {
-					bestRank, matches, matchedKey = to.rank, []linkCandidate{to}, key
-				} else if to.rank == bestRank {
-					matches = append(matches, to)
-				}
-			}
-		}
-		if len(matches) == 1 {
-			to := matches[0].node
-			links = append(links, domain.TopologyEdge{From: from.node.ID, To: to.ID, Relation: "cross-cluster", Transport: transportOf(from.node), Destination: to.ClusterID + "/" + to.Namespace + "/" + to.Name, State: "resolved", Evidence: "auto-discovered from configuration: target " + matchedKey + " matched " + matches[0].evidence})
-		} else if len(matches) > 1 {
-			findings = append(findings, domain.Finding{ID: "ambiguous-cluster-link:" + from.node.ID, Severity: domain.StatusWarning, Title: "Cross-cluster target is ambiguous", Resource: from.node.ClusterID + "/" + from.node.Name, Basis: fmt.Sprintf("configuration target matched %d remote entries", len(matches)), TargetID: from.node.ID})
-		}
-	}
-	return links, findings
+	return discoverLinksWithRules(nodes, existing, defaultLinkRules())
 }
 
 func outboundKeys(node domain.TopologyNode) []string {
@@ -453,7 +415,7 @@ func outboundKeys(node domain.TopologyNode) []string {
 }
 
 func entryKeys(node domain.TopologyNode) []string {
-	if node.Kind != "Gateway" && node.Kind != "Listener" {
+	if node.Kind != "Gateway" && node.Kind != "Listener" && node.Kind != "Ingress" {
 		return nil
 	}
 	keys := valuesWithPrefixes(node.Conditions, "Address=", "Hostname=")

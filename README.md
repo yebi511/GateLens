@@ -168,6 +168,8 @@ kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 
 远端 GPU 集群使用 `deploy/agent.yaml`：修改其中的 `GATELENS_CLUSTER_ID`、`GATELENS_CLUSTER_NAME` 和 `GATELENS_SERVER_URL`，在远端创建同值的 `gatelens-agent-auth` Secret 后应用清单。无需配置 `ClusterLink`。
 
+升级 Agent 时应重新执行 `kubectl apply -f deploy/agent.yaml`，不要只替换 Deployment 镜像；新版采集器可能增加只读 informer，对应的 ClusterRole `list/watch` 权限也必须同步更新。辅助 informer 暂时不可用时 Agent 仍会上报核心快照，但对应资源不会出现在拓扑中。
+
 ## 配置
 
 ### API
