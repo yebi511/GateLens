@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import StatusBadge from '../components/StatusBadge.vue'
 import type { EnvoyCluster, EnvoyConfig, EnvoyExtension, EnvoyListener, Topology } from '../types'
 
-const props = defineProps<{ topology: Topology; initialGatewayId?: string }>()
+const props = defineProps<{ topology: Topology; clusterId: string; initialGatewayId?: string }>()
 const emit = defineEmits<{ error: [message: string] }>()
 
 const gatewayID = ref('')
@@ -22,7 +22,7 @@ const copied = ref(false)
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
 
 const gateways = computed(() => props.topology.nodes.filter((node) =>
-  node.kind === 'Gateway' && node.conditions.includes('EnvoyConfig=available'),
+  node.clusterID === props.clusterId && node.kind === 'Gateway' && node.conditions.includes('EnvoyConfig=available'),
 ))
 const listeners = computed(() => {
   const query = search.value.trim().toLowerCase()

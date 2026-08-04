@@ -38,7 +38,7 @@ func TestSendOnceUploadsSnapshotWithCredentials(t *testing.T) {
 
 	runner, err := New(demo.NewStore(), Config{
 		ServerURL: server.URL, Token: "test-token", ClusterID: "gpu-prod",
-		ClusterName: "GPU Production", ClusterRole: "gpu-inference", Interval: time.Second,
+		ClusterName: "GPU Production", Interval: time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,7 @@ func TestSendOnceUploadsSnapshotWithCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := <-received
-	if payload.Cluster.ID != "gpu-prod" || payload.Cluster.Name != "GPU Production" || payload.Cluster.Role != "gpu-inference" {
+	if payload.Cluster.ID != "gpu-prod" || payload.Cluster.Name != "GPU Production" {
 		t.Fatalf("cluster=%#v", payload.Cluster)
 	}
 	if payload.Topology.SnapshotID == "" || payload.SentAt == "" {

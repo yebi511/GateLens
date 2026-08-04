@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { Check, CircleHelp, LoaderCircle, Route, XCircle } from '@lucide/vue'
 import { api } from '../api/client'
 import type { GateLensContext, RouteExplanation, Topology } from '../types'
 
-const props = defineProps<{ context: GateLensContext; topology: Topology }>()
+const props = defineProps<{ context: GateLensContext; topology: Topology; clusterId: string }>()
 const emit = defineEmits<{ locate: [targetID: string]; error: [message: string] }>()
 
-const gateways = computed(() => props.topology.nodes.filter((node) => node.kind === 'Gateway'))
-const listeners = computed(() => props.topology.nodes.filter((node) => node.kind === 'Listener'))
-const namespaces = computed(() => props.context.namespaces.filter((item) => item !== 'all'))
+const cluster = computed(() => props.topology.clusters?.find((item) => item.id === props.clusterId))
+const gateways = computed(() => props.topology.nodes.filter((node) => node.clusterID === props.clusterId && node.kind === 'Gateway'))
+const listeners = computed(() => props.topology.nodes.filter((node) => node.clusterID === props.clusterId && node.kind === 'Listener'))
+const namespaces = computed(() => (cluster.value?.namespaces ?? props.context.namespaces).filter((item) => item !== 'all'))
 const form = reactive({
   gateway: gateways.value[0]?.id ?? '',
   listener: '',
@@ -22,12 +23,19 @@ const form = reactive({
 const result = ref<RouteExplanation | null>(null)
 const loading = ref(false)
 
+watch(gateways, (items) => {
+  if (!items.some((gateway) => gateway.id === form.gateway)) form.gateway = items[0]?.id ?? ''
+  form.listener = ''
+  form.namespace = ''
+  result.value = null
+}, { immediate: true })
+
 async function submit() {
   loading.value = true
   result.value = null
   try {
     result.value = await api.explain({
-      snapshotID: props.context.snapshot.id,
+      snapshotID: cluster.value?.snapshot.id ?? props.context.snapshot.id,
       gateway: form.gateway,
       listener: form.listener,
       method: form.method,
@@ -71,7 +79,7 @@ function stepIcon(state: string) {
 
     <div class="simulator-layout">
       <form class="request-form" @submit.prevent="submit" @reset.prevent="reset">
-        <div class="panel-title"><h2>请求输入</h2><span>快照 {{ context.snapshot.observedAt }}</span></div>
+        <div class="panel-title"><h2>请求输入</h2><span>快照 {{ cluster?.snapshot.observedAt ?? context.snapshot.observedAt }}</span></div>
         <label>Gateway
           <select v-model="form.gateway" required>
             <option v-for="gateway in gateways" :key="gateway.id" :value="gateway.id">{{ gateway.namespace }}/{{ gateway.name }}</option>

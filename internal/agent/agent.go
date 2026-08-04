@@ -21,7 +21,6 @@ type Config struct {
 	Token       string
 	ClusterID   string
 	ClusterName string
-	ClusterRole string
 	Interval    time.Duration
 }
 
@@ -41,9 +40,6 @@ func New(reader source.Reader, config Config) (*Runner, error) {
 	}
 	if config.ClusterName == "" {
 		config.ClusterName = config.ClusterID
-	}
-	if config.ClusterRole == "" {
-		config.ClusterRole = "member"
 	}
 	if config.Interval <= 0 {
 		config.Interval = 30 * time.Second
@@ -78,7 +74,7 @@ func (r *Runner) SendOnce(ctx context.Context) error {
 	if topology.SnapshotID == "" || localContext.Snapshot.ID == "" {
 		return errLocalSnapshotNotReady
 	}
-	cluster := domain.TopologyCluster{ID: r.config.ClusterID, Name: r.config.ClusterName, Role: r.config.ClusterRole, Version: localContext.Cluster.Version, ConnectionState: "connected", Namespaces: append([]string(nil), localContext.Namespaces...), Snapshot: localContext.Snapshot}
+	cluster := domain.TopologyCluster{ID: r.config.ClusterID, Name: r.config.ClusterName, Version: localContext.Cluster.Version, ConnectionState: "connected", Namespaces: append([]string(nil), localContext.Namespaces...), Snapshot: localContext.Snapshot}
 	payload := domain.AgentSnapshot{Cluster: cluster, Context: localContext, Topology: topology, Findings: r.reader.Findings(), Resources: r.reader.Resources(""), SentAt: time.Now().UTC().Format(time.RFC3339)}
 	body, err := json.Marshal(payload)
 	if err != nil {

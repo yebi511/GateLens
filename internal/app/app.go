@@ -25,7 +25,6 @@ type Config struct {
 	AgentServerURL string
 	AgentToken     string
 	ClusterName    string
-	ClusterRole    string
 	AgentInterval  time.Duration
 	StaleAfter     time.Duration
 }
@@ -44,13 +43,12 @@ func ConfigFromEnv() Config {
 		clusterID = "in-cluster"
 	}
 	clusterName := os.Getenv("GATELENS_CLUSTER_NAME")
-	clusterRole := os.Getenv("GATELENS_CLUSTER_ROLE")
 	agentServerURL := os.Getenv("GATELENS_SERVER_URL")
 	agentToken := os.Getenv("GATELENS_AGENT_TOKEN")
 	agentInterval := durationFromEnv("GATELENS_AGENT_INTERVAL", 30*time.Second)
 	staleAfter := durationFromEnv("GATELENS_STALE_AFTER", 2*time.Minute)
 	allowedOrigins := splitCommaSeparated(os.Getenv("GATELENS_ALLOWED_ORIGINS"))
-	return Config{Address: address, Mode: mode, ClusterID: clusterID, ClusterName: clusterName, ClusterRole: clusterRole, AgentServerURL: agentServerURL, AgentToken: agentToken, AgentInterval: agentInterval, StaleAfter: staleAfter, AllowedOrigins: allowedOrigins}
+	return Config{Address: address, Mode: mode, ClusterID: clusterID, ClusterName: clusterName, AgentServerURL: agentServerURL, AgentToken: agentToken, AgentInterval: agentInterval, StaleAfter: staleAfter, AllowedOrigins: allowedOrigins}
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -68,7 +66,7 @@ func Run(ctx context.Context, config Config) error {
 		if err != nil {
 			return err
 		}
-		runner, err := agent.New(store, agent.Config{ServerURL: config.AgentServerURL, Token: config.AgentToken, ClusterID: config.ClusterID, ClusterName: config.ClusterName, ClusterRole: config.ClusterRole, Interval: config.AgentInterval})
+		runner, err := agent.New(store, agent.Config{ServerURL: config.AgentServerURL, Token: config.AgentToken, ClusterID: config.ClusterID, ClusterName: config.ClusterName, Interval: config.AgentInterval})
 		if err != nil {
 			return err
 		}

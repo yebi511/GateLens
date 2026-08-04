@@ -25,7 +25,6 @@ export interface TopologyNode {
 export interface TopologyCluster {
   id: string
   name: string
-  role: string
   environment?: string
   version: string
   connectionState: string

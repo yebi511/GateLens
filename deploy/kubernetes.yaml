@@ -106,7 +106,6 @@ spec:
             - {name: GATELENS_MODE, value: "agent"}
             - {name: GATELENS_CLUSTER_ID, value: "edge-prod"}
             - {name: GATELENS_CLUSTER_NAME, value: "Gateway Production"}
-            - {name: GATELENS_CLUSTER_ROLE, value: "ingress-gateway"}
             - {name: GATELENS_SERVER_URL, value: "http://gatelens-api:8080"}
             - {name: GATELENS_AGENT_INTERVAL, value: "30s"}
             - name: GATELENS_AGENT_TOKEN

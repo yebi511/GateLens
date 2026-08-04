@@ -27,26 +27,26 @@ type pendingCommand struct {
 }
 
 type Store struct {
-	mutex           sync.RWMutex
-	entryClusterID  string
-	staleAfter      time.Duration
-	now             func() time.Time
-	snapshots       map[string]receivedSnapshot
-	commandQueues   map[string]chan domain.AgentCommand
-	pendingCommands map[string]pendingCommand
+	mutex              sync.RWMutex
+	preferredClusterID string
+	staleAfter         time.Duration
+	now                func() time.Time
+	snapshots          map[string]receivedSnapshot
+	commandQueues      map[string]chan domain.AgentCommand
+	pendingCommands    map[string]pendingCommand
 }
 
-func NewStore(entryClusterID string, staleAfter time.Duration) *Store {
+func NewStore(preferredClusterID string, staleAfter time.Duration) *Store {
 	if staleAfter <= 0 {
 		staleAfter = 2 * time.Minute
 	}
 	return &Store{
-		entryClusterID:  entryClusterID,
-		staleAfter:      staleAfter,
-		now:             time.Now,
-		snapshots:       map[string]receivedSnapshot{},
-		commandQueues:   map[string]chan domain.AgentCommand{},
-		pendingCommands: map[string]pendingCommand{},
+		preferredClusterID: preferredClusterID,
+		staleAfter:         staleAfter,
+		now:                time.Now,
+		snapshots:          map[string]receivedSnapshot{},
+		commandQueues:      map[string]chan domain.AgentCommand{},
+		pendingCommands:    map[string]pendingCommand{},
 	}
 }
 
@@ -91,11 +91,11 @@ func (s *Store) ReceiveSnapshot(_ context.Context, payload domain.AgentSnapshot)
 func (s *Store) Context() domain.Context {
 	snapshots := s.snapshotList()
 	if len(snapshots) == 0 {
-		return domain.Context{Cluster: domain.Cluster{ID: s.entryClusterID, Name: s.entryClusterID}, Snapshot: domain.Snapshot{State: "waiting-for-agents"}}
+		return domain.Context{Cluster: domain.Cluster{ID: s.preferredClusterID, Name: s.preferredClusterID}, Snapshot: domain.Snapshot{State: "waiting-for-agents"}}
 	}
 	selected := snapshots[0].payload
 	for _, snapshot := range snapshots {
-		if snapshot.payload.Cluster.ID == s.entryClusterID {
+		if snapshot.payload.Cluster.ID == s.preferredClusterID {
 			selected = snapshot.payload
 			break
 		}
@@ -376,7 +376,7 @@ func (s *Store) federated() (domain.Topology, []domain.Finding) {
 			finding.TargetID = globalID(cluster.ID, finding.TargetID)
 			findings = append(findings, finding)
 		}
-		if cluster.ID == s.entryClusterID || result.SnapshotID == "" {
+		if cluster.ID == s.preferredClusterID || result.SnapshotID == "" {
 			result.SnapshotID = cluster.Snapshot.ID
 		}
 	}

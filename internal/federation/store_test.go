@@ -148,7 +148,7 @@ func TestStoreReportsTimeSkewAndStaleAgents(t *testing.T) {
 func snapshotFor(clusterID, snapshotID string, observedAt time.Time, nodes []domain.TopologyNode) domain.AgentSnapshot {
 	snapshot := domain.Snapshot{ID: snapshotID, ObservedAt: observedAt.Format(time.RFC3339), State: "complete"}
 	return domain.AgentSnapshot{
-		Cluster:  domain.TopologyCluster{ID: clusterID, Name: clusterID, Role: "member", Snapshot: snapshot},
+		Cluster:  domain.TopologyCluster{ID: clusterID, Name: clusterID, Snapshot: snapshot},
 		Context:  domain.Context{Cluster: domain.Cluster{ID: clusterID, Name: clusterID}, Snapshot: snapshot},
 		Topology: domain.Topology{SnapshotID: snapshotID, ObservedAt: snapshot.ObservedAt, Nodes: nodes},
 		SentAt:   observedAt.Format(time.RFC3339),

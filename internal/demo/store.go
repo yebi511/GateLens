@@ -83,8 +83,8 @@ func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExpl
 func demoClusters(edgeSnapshot domain.Snapshot) []domain.TopologyCluster {
 	gpuSnapshot := domain.Snapshot{ID: "snapshot-gpu-prod-20260724-104246", ObservedAt: "2026-07-24T10:42:46+08:00", State: "complete"}
 	return []domain.TopologyCluster{
-		{ID: "edge-prod", Name: "prod-cn-shanghai", Role: "ingress-gateway", Environment: "production", Version: "Kubernetes 1.31", ConnectionState: "connected", Namespaces: []string{"higress-system", "ai-platform", "inference"}, Snapshot: edgeSnapshot},
-		{ID: "gpu-prod", Name: "prod-cn-shanghai-gpu", Role: "gpu-inference", Environment: "production", Version: "Kubernetes 1.30", ConnectionState: "connected", Namespaces: []string{"istio-system", "inference"}, Snapshot: gpuSnapshot},
+		{ID: "edge-prod", Name: "prod-cn-shanghai", Environment: "production", Version: "Kubernetes 1.31", ConnectionState: "connected", Namespaces: []string{"higress-system", "ai-platform", "inference"}, Snapshot: edgeSnapshot},
+		{ID: "gpu-prod", Name: "prod-cn-shanghai-gpu", Environment: "production", Version: "Kubernetes 1.30", ConnectionState: "connected", Namespaces: []string{"istio-system", "inference"}, Snapshot: gpuSnapshot},
 	}
 }
 func demoNodes() []domain.TopologyNode {

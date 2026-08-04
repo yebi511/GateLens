@@ -72,7 +72,6 @@ spec:
             - {name: GATELENS_MODE, value: "agent"}
             - {name: GATELENS_CLUSTER_ID, value: "gpu-prod"}
             - {name: GATELENS_CLUSTER_NAME, value: "GPU Production"}
-            - {name: GATELENS_CLUSTER_ROLE, value: "gpu-inference"}
             - {name: GATELENS_SERVER_URL, value: "https://gatelens.example.com"}
             - {name: GATELENS_AGENT_INTERVAL, value: "30s"}
             - name: GATELENS_AGENT_TOKEN

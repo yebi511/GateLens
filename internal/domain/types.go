@@ -42,7 +42,6 @@ type Topology struct {
 type TopologyCluster struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
-	Role            string   `json:"role"`
 	Environment     string   `json:"environment,omitempty"`
 	Version         string   `json:"version"`
 	ConnectionState string   `json:"connectionState"`

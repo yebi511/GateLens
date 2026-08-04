@@ -164,9 +164,9 @@ make deploy \
 kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 ```
 
-访问 <http://localhost:8080>。`gatelens` Service 指向 Web，Web 只访问中央 `gatelens-api`。入口集群的 `gatelens-agent` 持有只读权限并上报快照，中央 Server 和 Web 不持有集群读取权限。
+访问 <http://localhost:8080>。`gatelens` Service 指向 Web，Web 只访问中央 `gatelens-api`。每个接入集群的 `gatelens-agent` 都以相同方式持有本集群只读权限并上报快照，中央 Server 和 Web 不持有集群读取权限。集群用途由 `GATELENS_CLUSTER_NAME` 的显示名表达，拓扑不会赋予某个集群特殊的入口角色。
 
-远端 GPU 集群使用 `deploy/agent.yaml`：修改其中的 `GATELENS_CLUSTER_ID`、`GATELENS_CLUSTER_NAME` 和 `GATELENS_SERVER_URL`，在远端创建同值的 `gatelens-agent-auth` Secret 后应用清单。无需配置 `ClusterLink`。
+其他集群使用 `deploy/agent.yaml`：修改其中的 `GATELENS_CLUSTER_ID`、`GATELENS_CLUSTER_NAME` 和 `GATELENS_SERVER_URL`，在远端创建同值的 `gatelens-agent-auth` Secret 后应用清单。无需配置 `ClusterLink`。
 
 升级 Agent 时应重新执行 `kubectl apply -f deploy/agent.yaml`，不要只替换 Deployment 镜像；新版采集器可能增加只读 informer，对应的 ClusterRole `list/watch` 权限也必须同步更新。辅助 informer 暂时不可用时 Agent 仍会上报核心快照，但对应资源不会出现在拓扑中。
 
@@ -181,7 +181,6 @@ kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 | `GATELENS_CLUSTER_ID` | `in-cluster` | 拓扑和快照中的集群标识 |
 | `GATELENS_ALLOWED_ORIGINS` | 空 | 允许直接跨域调用 API 的 Origin，多个值用逗号分隔 |
 | `GATELENS_CLUSTER_NAME` | cluster ID | Agent 上报的集群显示名 |
-| `GATELENS_CLUSTER_ROLE` | `member` | Agent 上报的集群角色，例如 `ingress-gateway` 或 `gpu-inference` |
 | `GATELENS_SERVER_URL` | 空 | Agent 上报快照的中央 Server 地址；`agent` 模式必填 |
 | `GATELENS_AGENT_TOKEN` | 空 | Server 接收快照和 Agent 上传时使用的共享 Bearer token |
 | `GATELENS_AGENT_INTERVAL` | `30s` | Agent 快照上报周期 |

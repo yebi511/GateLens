@@ -348,7 +348,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 	snap.resources = resourcesFromNodes(snap.topology.Nodes, snap.findings)
 	snap.topology.Consistency = "single-cluster"
 	snap.topology.Clusters = []domain.TopologyCluster{{
-		ID: s.clusterID, Name: s.clusterID, Role: "ingress", Version: "Kubernetes",
+		ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes",
 		ConnectionState: "connected", Namespaces: append([]string(nil), snap.context.Namespaces...), Snapshot: snap.context.Snapshot,
 	}}
 	s.mutex.Lock()

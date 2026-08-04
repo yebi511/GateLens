@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { Activity, Boxes, Network, Route, ShieldAlert, Waypoints, X } from '@lucide/vue'
-import type { GateLensContext, ViewID } from '../types'
+import type { TopologyCluster, ViewID } from '../types'
 
 const props = defineProps<{
   current: ViewID
-  context: GateLensContext | null
+  cluster: TopologyCluster | null
   findingCount: number
   open: boolean
 }>()
@@ -49,8 +49,8 @@ const items = [
       <div class="cluster-card">
         <Activity :size="16" aria-hidden="true" />
         <div>
-          <strong>{{ props.context?.cluster.name ?? '正在连接集群' }}</strong>
-          <small>{{ props.context?.cluster.version ?? '读取 Kubernetes 快照' }}</small>
+          <strong>{{ props.cluster?.name ?? '正在连接集群' }}</strong>
+          <small>{{ props.cluster?.version ?? '读取 Kubernetes 快照' }}</small>
         </div>
       </div>
     </div>

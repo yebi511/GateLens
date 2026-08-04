@@ -8,7 +8,7 @@ AI 网关的部署命名空间、Gateway API 对象命名空间、推理服务�
 
 ```mermaid
 flowchart LR
-  subgraph C1[业务入口集群]
+  subgraph C1[集群 A]
     HG[Higress 工作负载\nhigress-system] --> GW[Gateway / HTTPRoute\n配置对象命名空间]
     GW --> X[跨命名空间后端引用\n或外部上游]
   end
@@ -49,7 +49,7 @@ flowchart LR
 
 例如 Higress 把请求发往独立推理集群的 Istio IngressGateway，再由 Istio 路由到 `inference` 中的模型服务。这不是一个 Kubernetes `BackendRef` 可以完整表达的单跳关系；它至少包含：
 
-1. 入口集群中的 Higress 路由与其上游目标；
+1. 源集群中的 Higress 路由与其上游目标；
 2. 集群间传输方式，例如 DNS、私网负载均衡、网格 East-West Gateway、HTTP(S) 或 mTLS；
 3. 推理集群的入口 Gateway/Listener；
 4. Istio 的路由对象或 Gateway API Route；
@@ -92,15 +92,15 @@ flowchart LR
   A3 -. HTTPS + mTLS .-> B1
 ```
 
-当远端集群没有接入时，`TransitHop` 仍然存在，但右侧显示“远端未接入”。图只展示已知的 FQDN/LB/目标引用和入口集群的证据，不能推断远端 Istio 路由或模型 Endpoint。
+当远端集群没有接入时，`TransitHop` 仍然存在，但右侧显示“远端未接入”。图只展示已知的 FQDN/LB/目标引用和当前集群的证据，不能推断远端 Istio 路由或模型 Endpoint。
 
 ## 请求模拟的跨集群规则
 
 一次模拟固定为 `FederatedSnapshot`，而不是单一 `TopologySnapshot`。结果步骤按 hop 分段：
 
-1. `入口集群：Higress/Gateway 规则`；
+1. `源集群：Higress/Gateway 规则`；
 2. `传输边界：目标、协议、TLS、解析证据`；
-3. `推理集群：Istio 入口与路由规则`；
+3. `目标集群：Istio 入口与路由规则`；
 4. `推理服务：Service、Endpoint 和模型候选`。
 
 每段独立标注 `Declared`、`Resolved`、`Observed` 或 `Inferred`。只有关联 Trace、请求 ID 或可靠的网关日志能跨越传输边界时，才能把两个分段称为同一条实际请求。静态推断只能表达“入口配置指向远端入口，且远端配置将匹配为某条路由”。
@@ -111,10 +111,10 @@ flowchart LR
 
 在既有拓扑工作区增加以下元素：
 
-- 顶部上下文由单一 `集群` 升级为“入口集群 + 已接入相关集群”；用户始终从入口集群发起浏览。
-- 图按集群分区。跨集群边始终展示传输类型、目标和验证状态，不使用普通后端边的视觉样式。
+- 顶部上下文使用平等的集群切换器；每个拓扑页面只展示当前集群，命名空间选项来自当前集群。
+- 跨集群边界挂在当前集群内对应的 Route、McpBridge、Registry、TransitHop 或 Service 等配置对象上，详情明确展示方向、目标集群、目标服务或网关、传输类型和验证证据。
 - 节点详情同时显示 `配置对象位置` 与 `运行工作负载位置`；二者不同时不视为异常。
-- 侧栏增加“路径范围”：`当前集群`、`已接入关联集群`。MVP 可只读显示，后续开放选择。
+- 节点详情侧栏只呈现当前集群对象；跨集群信息作为边界目标展示，不把远端对象混入当前集群画布。
 - 请求模拟结果以“第 1 跳 / 第 2 跳”分组。没有远端数据时，第 2 跳展示未接入状态和需要的接入条件，而不是空白。
 - 健康检查新增：跨命名空间授权缺失、跨集群目标无法解析、远端入口不可观测、快照时间偏差过大。
 
