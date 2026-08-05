@@ -2,6 +2,7 @@ package kube
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -49,6 +50,19 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 			}
 			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: registryID, Name: name, Kind: "Registry", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: registryType + "://" + domainName + ":" + port, Conditions: conditions, Source: "McpBridge.spec.registries"})
 			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: id, To: registryID, Relation: "discovers"})
+			if domainName != "" {
+				targetID := registryID + "/target"
+				targetConditions := []string{"Address=" + domainName, "Port=" + port}
+				if protocol != "" {
+					targetConditions = append(targetConditions, "Protocol="+protocol)
+				}
+				snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
+					ID: targetID, Name: domainName, Kind: "ExternalTarget", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID,
+					Status: domain.StatusHealthy, StatusText: "Configured", Summary: "Configured target " + domainName + ":" + port,
+					Conditions: targetConditions, Source: "McpBridge.spec.registries[].domain",
+				})
+				snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: registryID, To: targetID, Relation: "resolves"})
+			}
 		}
 	}
 
@@ -160,6 +174,117 @@ func isHigressIngress(ingress *networkingv1.Ingress) bool {
 		return true
 	}
 	return ingress.Annotations["kubernetes.io/ingress.class"] == "higress"
+}
+
+func linkIngressesToGateways(snap *snapshot, ingressItems, ingressClassItems []any) {
+	ingressClassControllers := map[string]string{}
+	for _, item := range ingressClassItems {
+		ingressClass, ok := item.(*networkingv1.IngressClass)
+		if !ok {
+			continue
+		}
+		ingressClassControllers[ingressClass.Name] = string(ingressClass.Spec.Controller)
+	}
+
+	type gatewayCandidate struct {
+		id         string
+		name       string
+		controller string
+	}
+	gateways := []gatewayCandidate{}
+	for _, node := range snap.topology.Nodes {
+		if node.Kind != "Gateway" || node.ClusterID != snap.context.Cluster.ID {
+			continue
+		}
+		controller := conditionWithPrefix(node.Conditions, "Controller=")
+		if controller == "" {
+			continue
+		}
+		gateways = append(gateways, gatewayCandidate{id: node.ID, name: node.Namespace + "/" + node.Name, controller: controller})
+	}
+	sort.Slice(gateways, func(i, j int) bool { return gateways[i].id < gateways[j].id })
+
+	for _, item := range ingressItems {
+		ingress, ok := item.(*networkingv1.Ingress)
+		if !ok {
+			continue
+		}
+		className := ingressClassName(ingress)
+		if className == "" {
+			continue
+		}
+		controller := ingressClassControllers[className]
+		fallbackFamily := ""
+		if controller == "" && strings.EqualFold(className, "higress") {
+			fallbackFamily = "higress"
+		}
+
+		matches := []gatewayCandidate{}
+		for _, gateway := range gateways {
+			if controllersCompatible(controller, gateway.controller) || (fallbackFamily != "" && controllerFamily(gateway.controller) == fallbackFamily) {
+				matches = append(matches, gateway)
+			}
+		}
+		ingressID := "ingress/" + ingress.Namespace + "/" + ingress.Name
+		switch len(matches) {
+		case 1:
+			evidence := "IngressClass " + className
+			if controller != "" {
+				evidence += " controller " + controller
+			} else {
+				evidence += " matched by Higress compatibility fallback"
+			}
+			evidence += "; Gateway controller " + matches[0].controller
+			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: matches[0].id, To: ingressID, Relation: "attaches", Evidence: evidence})
+		case 0:
+			// An Ingress controller may run outside the visible workload set; absence is not an error.
+		default:
+			names := make([]string, 0, len(matches))
+			for _, match := range matches {
+				names = append(names, match.name)
+			}
+			addFinding(snap, domain.StatusWarning, "Ingress 对应多个网关", ingress.Namespace+"/"+ingress.Name, "IngressClass="+className+"; Gateways="+strings.Join(names, ","), ingressID)
+		}
+	}
+}
+
+func ingressClassName(ingress *networkingv1.Ingress) string {
+	if ingress.Spec.IngressClassName != nil && strings.TrimSpace(*ingress.Spec.IngressClassName) != "" {
+		return strings.TrimSpace(*ingress.Spec.IngressClassName)
+	}
+	return strings.TrimSpace(ingress.Annotations["kubernetes.io/ingress.class"])
+}
+
+func controllersCompatible(left, right string) bool {
+	left = strings.TrimSpace(strings.ToLower(left))
+	right = strings.TrimSpace(strings.ToLower(right))
+	if left == "" || right == "" {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	leftFamily, rightFamily := controllerFamily(left), controllerFamily(right)
+	return leftFamily != "" && leftFamily == rightFamily
+}
+
+func controllerFamily(controller string) string {
+	controller = strings.ToLower(controller)
+	for _, family := range []string{"higress", "istio", "envoy"} {
+		if strings.Contains(controller, family) {
+			return family
+		}
+	}
+	return ""
+}
+
+func conditionWithPrefix(conditions []string, prefix string) string {
+	for _, condition := range conditions {
+		if strings.HasPrefix(condition, prefix) {
+			return strings.TrimPrefix(condition, prefix)
+		}
+	}
+	return ""
 }
 
 func annotationConditions(values map[string]string) []string {

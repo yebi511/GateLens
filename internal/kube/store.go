@@ -79,6 +79,7 @@ func (s *Store) Run(ctx context.Context) error {
 	endpoints := coreFactory.Discovery().V1().EndpointSlices().Informer()
 	namespaces := coreFactory.Core().V1().Namespaces().Informer()
 	ingresses := coreFactory.Networking().V1().Ingresses().Informer()
+	ingressClasses := coreFactory.Networking().V1().IngressClasses().Informer()
 	pods := coreFactory.Core().V1().Pods().Informer()
 	deployments := coreFactory.Apps().V1().Deployments().Informer()
 
@@ -97,10 +98,12 @@ func (s *Store) Run(ctx context.Context) error {
 		emptyStore(),
 		deployments.GetStore(),
 		pods.GetStore(),
+		ingressClasses.GetStore(),
 	}
 
-	allInformers := []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, pods, deployments}
+	allInformers := []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, ingressClasses, pods, deployments}
 	coreSynced := []cache.InformerSynced{services.HasSynced, endpoints.HasSynced, namespaces.HasSynced}
+	dynamicInformerCount := 0
 	addDynamicInformer := func(resource schema.GroupVersionResource, storeIndex int) {
 		if !available[resource] {
 			return
@@ -108,6 +111,7 @@ func (s *Store) Run(ctx context.Context) error {
 		informer := dynamicFactory.ForResource(resource).Informer()
 		stores[storeIndex] = informer.GetStore()
 		allInformers = append(allInformers, informer)
+		dynamicInformerCount++
 	}
 	addDynamicInformer(gatewaysGVR, 3)
 	addDynamicInformer(routesGVR, 4)
@@ -138,7 +142,7 @@ func (s *Store) Run(ctx context.Context) error {
 		_, _ = informer.AddEventHandler(cache.ResourceEventHandlerFuncs{AddFunc: func(any) { refresh() }, UpdateFunc: func(any, any) { refresh() }, DeleteFunc: func(any) { refresh() }})
 	}
 	coreFactory.Start(ctx.Done())
-	if len(allInformers) > 6 {
+	if dynamicInformerCount > 0 {
 		dynamicFactory.Start(ctx.Done())
 	}
 	if !cache.WaitForCacheSync(ctx.Done(), coreSynced...) {
@@ -213,7 +217,7 @@ func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExpl
 
 func (s *Store) rebuild(stores ...cache.Store) {
 	serviceStore, endpointStore, namespaceStore, gatewayStore, routeStore, grantStore := stores[0], stores[1], stores[2], stores[3], stores[4], stores[5]
-	var ingressStore, mcpBridgeStore, gatewayClassStore, deploymentStore, podStore cache.Store
+	var ingressStore, mcpBridgeStore, gatewayClassStore, deploymentStore, podStore, ingressClassStore cache.Store
 	if len(stores) > 6 {
 		ingressStore = stores[6]
 	}
@@ -228,6 +232,9 @@ func (s *Store) rebuild(stores ...cache.Store) {
 	}
 	if len(stores) > 10 {
 		podStore = stores[10]
+	}
+	if len(stores) > 11 {
+		ingressClassStore = stores[11]
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	snap := snapshot{runtimes: map[string]gatewayRuntime{}, context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: append([]string(nil), s.capabilities...)}}
@@ -342,6 +349,13 @@ func (s *Store) rebuild(stores ...cache.Store) {
 			}
 		}
 		s.addHigressResources(&snap, ingressStore.List(), mcpBridgeStore.List(), serviceRefs)
+	}
+	if ingressStore != nil {
+		var ingressClasses []any
+		if ingressClassStore != nil {
+			ingressClasses = ingressClassStore.List()
+		}
+		linkIngressesToGateways(&snap, ingressStore.List(), ingressClasses)
 	}
 	snap.topology.SnapshotID = snap.context.Snapshot.ID
 	snap.topology.ObservedAt = now

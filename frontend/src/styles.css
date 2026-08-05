@@ -383,8 +383,12 @@ tbody tr:hover { background: #f8fbfa; }
 .single-cluster-context { grid-template-columns: minmax(260px, 1.25fr) minmax(260px, 1fr); }
 .single-cluster-context .federated-cluster-summary { border-right: 1px solid var(--line); }
 .single-cluster-context .federated-snapshot { border-right: 0; }
-.single-cluster-workspace .federated-board { display: flex; }
+.single-cluster-workspace { position: relative; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start; overflow: visible; border: 0; background: transparent; }
+.single-cluster-workspace .federated-board { display: flex; grid-column: 1; grid-row: 1; min-height: 650px; border: 1px solid var(--line); border-radius: var(--radius); }
 .single-cluster-workspace .cluster-zone { flex: 1; min-width: 650px; }
+.single-cluster-workspace .federated-detail { position: sticky; top: 70px; z-index: 8; grid-column: 1; grid-row: 1; align-self: start; justify-self: end; width: 310px; max-width: calc(100% - 24px); max-height: calc(100vh - 84px); margin: 12px 0 12px 12px; overflow-y: auto; border: 1px solid var(--line); border-right: 0; border-radius: var(--radius) 0 0 var(--radius); box-shadow: -10px 0 28px rgba(24,55,54,0.14); }
+.detail-collapse-button { position: absolute; top: 14px; right: 14px; z-index: 2; width: 30px; height: 30px; }
+.detail-reopen-button { position: sticky; top: calc(50vh - 38px); z-index: 8; grid-column: 1; grid-row: 1; align-self: start; justify-self: end; width: 26px; height: 76px; margin: 0; border-right: 0; border-radius: 5px 0 0 5px; color: #2f6861; background: #f7faf9; box-shadow: -6px 0 18px rgba(24,55,54,0.14); }
 .federated-node.boundary { min-height: 108px; }
 .boundary-target { grid-column: 1 / -1; display: flex !important; align-items: center; gap: 5px; min-width: 0; padding-top: 6px; border-top: 1px dashed #b8cfdb; color: #356176; font-size: 9px; font-weight: 700; }
 .boundary-target svg { flex: 0 0 auto; margin: 0; color: #3c7495; }
@@ -404,9 +408,43 @@ tbody tr:hover { background: #f8fbfa; }
   .single-cluster-context { grid-template-columns: 1fr; }
   .single-cluster-context .federated-cluster-summary { border-right: 0; border-bottom: 1px solid var(--line); }
   .single-cluster-workspace .cluster-zone { min-width: 620px; }
+  .single-cluster-workspace .federated-detail { position: fixed; top: auto; right: 10px; bottom: 10px; left: 10px; z-index: 30; width: auto; max-width: none; max-height: min(72vh, 620px); margin: 0; border-right: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 12px 36px rgba(24,55,54,0.2); }
+  .detail-reopen-button { position: fixed; top: calc(50vh - 38px); right: 0; z-index: 30; }
 }
 @media (max-width: 520px) {
   .context-bar label:first-of-type { display: flex; min-width: 0; }
   .context-bar label:first-of-type select { max-width: 138px; }
   .single-cluster-workspace .cluster-zone { min-width: 560px; }
+}
+
+/* Categorized topology columns */
+.single-cluster-workspace .cluster-zone { min-width: 0; }
+.cluster-columns-scroll { max-width: 100%; overflow-x: auto; }
+.cluster-columns { position: relative; isolation: isolate; display: grid; grid-template-columns: repeat(var(--category-count), minmax(152px, 1fr)); column-gap: 48px; min-width: 980px; min-height: 430px; padding: 14px; }
+.topology-links { position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none; overflow: visible; }
+.topology-link { color: #6c928c; opacity: 0.68; transition: opacity 160ms ease; }
+.topology-link-path { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.topology-link-label { fill: #52736f; stroke: rgba(248,250,249,0.96); stroke-width: 4px; opacity: 0; paint-order: stroke; font-size: 8px; font-weight: 750; letter-spacing: 0; transition: opacity 160ms ease; }
+.topology-link.relation-owns, .topology-link.relation-attaches { color: #477f77; opacity: 0.86; }
+.topology-link.active { color: #1c7165; opacity: 1; }
+.topology-link.active .topology-link-path { stroke-width: 2.25; }
+.topology-link.active .topology-link-label { opacity: 1; }
+.topology-link.muted { opacity: 0.12; }
+.topology-link.relation-excludes { color: #b26848; }
+.topology-link.relation-excludes .topology-link-path { stroke-dasharray: 4 3; }
+.topology-column { position: relative; z-index: 1; min-width: 0; }
+.topology-column-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 30px; padding: 0 2px 9px; border-bottom: 1px solid #d8e3e0; }
+.topology-column-header strong { color: #425f5e; font-size: 10px; font-weight: 800; }
+.topology-column-header span { min-width: 19px; padding: 2px 5px; border-radius: 9px; color: #577170; background: #e9f0ee; font-size: 9px; font-weight: 750; text-align: center; }
+.topology-column-nodes { display: grid; gap: 10px; align-content: start; padding-top: 11px; }
+.topology-column .federated-node { width: 100%; min-width: 0; }
+.topology-column .federated-node::after { display: none; }
+.topology-column-empty { display: grid; place-items: center; min-height: 72px; padding: 10px; border: 1px dashed #cbd7d5; color: #879696; background: rgba(255,255,255,0.58); font-size: 9px; }
+@media (max-width: 820px) {
+  .single-cluster-workspace .cluster-zone { min-width: 0; }
+  .cluster-columns { min-height: 360px; padding: 12px; }
+}
+@media (max-width: 520px) {
+  .single-cluster-workspace .cluster-zone { min-width: 0; }
+  .cluster-columns { padding: 10px; }
 }

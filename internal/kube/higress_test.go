@@ -1,12 +1,14 @@
 package kube
 
 import (
+	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/gatelens/gatelens/internal/domain"
@@ -49,6 +51,7 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	requireNode(t, store.Topology(), "Ingress", "mcp-api")
 	requireNode(t, store.Topology(), "McpBridge", "github-bridge")
 	requireNode(t, store.Topology(), "Registry", "github")
+	requireNode(t, store.Topology(), "ExternalTarget", "api.github.com")
 	for _, node := range store.Topology().Nodes {
 		if node.Kind == "Registry" && node.Name == "github" {
 			if !hasCondition(node.Conditions, "Protocol=https") {
@@ -63,6 +66,9 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	}
 	if !hasEdge(store.Topology(), "ingress/higress-system/mcp-api", "mcpbridge/higress-system/github-bridge/registry/github", "selects") {
 		t.Fatalf("expected Ingress destination to select McpBridge registry: %#v", store.Topology().Edges)
+	}
+	if !hasEdge(store.Topology(), "mcpbridge/higress-system/github-bridge/registry/github", "mcpbridge/higress-system/github-bridge/registry/github/target", "resolves") {
+		t.Fatalf("expected Registry domain to resolve to an external target: %#v", store.Topology().Edges)
 	}
 	result := store.Explain(domain.RouteExplanationRequest{Host: "mcp.example.com", Path: "/v1/tools", Method: "GET", Namespace: "higress-system"})
 	if result.Outcome != "Routed" {
@@ -107,6 +113,100 @@ func TestNginxIngressProvidesRemoteEntryKeysWithoutHigressCRD(t *testing.T) {
 		return
 	}
 	t.Fatalf("missing nginx Ingress node: %#v", store.Topology().Nodes)
+}
+
+func TestHigressIngressAttachesToUniqueCompatibleGateway(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		withIngressClass bool
+		legacyAnnotation bool
+	}{
+		{name: "IngressClass controller", withIngressClass: true},
+		{name: "Higress compatibility fallback", legacyAnnotation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stores := emptyStores(12)
+			class := "higress"
+			ingress := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: "model-route", Namespace: "models"}}
+			if test.legacyAnnotation {
+				ingress.Annotations = map[string]string{"kubernetes.io/ingress.class": class}
+			} else {
+				ingress.Spec.IngressClassName = &class
+			}
+			mustAdd(t, stores[6], ingress)
+			if test.withIngressClass {
+				mustAdd(t, stores[11], &networkingv1.IngressClass{
+					ObjectMeta: metav1.ObjectMeta{Name: class},
+					Spec:       networkingv1.IngressClassSpec{Controller: "higress.io/ingress-controller"},
+				})
+			}
+			addReadyHigressGateway(t, stores, "higress-system")
+
+			store := &Store{clusterID: "edge"}
+			store.rebuild(stores...)
+			if !hasEdge(store.Topology(), "gateway-runtime/higress-system/higress-gateway", "ingress/models/model-route", "attaches") {
+				t.Fatalf("missing Gateway -> Ingress edge: %#v", store.Topology().Edges)
+			}
+			for _, edge := range store.Topology().Edges {
+				if edge.From == "gateway-runtime/higress-system/higress-gateway" && edge.To == "ingress/models/model-route" && !strings.Contains(edge.Evidence, "IngressClass higress") {
+					t.Fatalf("edge evidence=%q", edge.Evidence)
+				}
+			}
+		})
+	}
+}
+
+func TestHigressIngressDoesNotGuessBetweenMultipleGateways(t *testing.T) {
+	stores := emptyStores(12)
+	class := "higress"
+	mustAdd(t, stores[6], &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "model-route", Namespace: "models"},
+		Spec:       networkingv1.IngressSpec{IngressClassName: &class},
+	})
+	mustAdd(t, stores[11], &networkingv1.IngressClass{
+		ObjectMeta: metav1.ObjectMeta{Name: class},
+		Spec:       networkingv1.IngressClassSpec{Controller: "higress.io/ingress-controller"},
+	})
+	addReadyHigressGateway(t, stores, "higress-a")
+	addReadyHigressGateway(t, stores, "higress-b")
+
+	store := &Store{clusterID: "edge"}
+	store.rebuild(stores...)
+	for _, edge := range store.Topology().Edges {
+		if edge.To == "ingress/models/model-route" && edge.Relation == "attaches" {
+			t.Fatalf("ambiguous Ingress must not attach to a guessed Gateway: %#v", edge)
+		}
+	}
+	for _, finding := range store.Findings() {
+		if finding.TargetID == "ingress/models/model-route" && finding.Title == "Ingress 对应多个网关" {
+			return
+		}
+	}
+	t.Fatalf("missing ambiguous Gateway finding: %#v", store.Findings())
+}
+
+func emptyStores(count int) []cache.Store {
+	stores := make([]cache.Store, count)
+	for index := range stores {
+		stores[index] = cache.NewStore(cache.MetaNamespaceKeyFunc)
+	}
+	return stores
+}
+
+func addReadyHigressGateway(t *testing.T, stores []cache.Store, namespace string) {
+	t.Helper()
+	labels := map[string]string{"app": "higress-gateway"}
+	mustAdd(t, stores[9], &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "higress-gateway", Namespace: namespace, Labels: labels},
+		Spec:       appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}},
+	})
+	mustAdd(t, stores[10], &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "higress-gateway-ready", Namespace: namespace, UID: types.UID(namespace + "-pod"), Labels: labels},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "higress-gateway", Image: "higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/gateway:2.2.0",
+		}}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}},
+	})
 }
 
 func requireNode(t *testing.T, topology domain.Topology, kind, name string) {
