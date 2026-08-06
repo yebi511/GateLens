@@ -2,6 +2,7 @@ package kube
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -103,11 +104,16 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 						backendIDs = append(backendIDs, bridgeID)
 						snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: ingressID, To: bridgeID, Relation: "routes"})
 						if destination := ingress.Annotations["higress.io/destination"]; destination != "" {
-							if registryID := registryIDs[bridgeKey][destination]; registryID != "" {
+							if registryID := registryIDForDestination(registryIDs[bridgeKey], destination); registryID != "" {
 								snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: ingressID, To: registryID, Relation: "selects"})
 							} else {
 								addFinding(snap, domain.StatusWarning, "Higress destination 未解析", ingress.Namespace+"/"+ingress.Name, "higress.io/destination="+destination, ingressID)
 							}
+						} else if registryID, ok := soleRegistryID(registryIDs[bridgeKey]); ok {
+							snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{
+								From: ingressID, To: registryID, Relation: "selects",
+								Evidence: "McpBridge has a single registry",
+							})
 						}
 					}
 				} else if service := path.Backend.Service; service != nil {
@@ -138,6 +144,26 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 	}
 }
 
+func soleRegistryID(registries map[string]string) (string, bool) {
+	if len(registries) != 1 {
+		return "", false
+	}
+	for _, id := range registries {
+		return id, true
+	}
+	return "", false
+}
+func registryIDForDestination(registries map[string]string, destination string) string {
+	destination = strings.TrimSpace(destination)
+	if id := registries[destination]; id != "" {
+		return id
+	}
+	host, _, err := net.SplitHostPort(destination)
+	if err != nil {
+		return ""
+	}
+	return registries[host]
+}
 func serviceForRegistryDomain(domain, defaultNamespace string, services map[string]*networkingService) (string, bool) {
 	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
 	parts := strings.Split(host, ".")

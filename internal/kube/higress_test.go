@@ -27,7 +27,7 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	mustAdd(t, stores[6], &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "mcp-api", Namespace: "higress-system",
-			Annotations: map[string]string{"higress.io/destination": "github.dns"},
+			Annotations: map[string]string{"higress.io/destination": "github.dns:443"},
 		},
 		Spec: networkingv1.IngressSpec{
 			IngressClassName: &class,
@@ -77,6 +77,39 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	}
 }
 
+func TestHigressIngressSelectsSoleMcpBridgeRegistryWithoutDestination(t *testing.T) {
+	stores := emptyStores(8)
+	class := "higress"
+	apiGroup := "networking.higress.io"
+	pathType := networkingv1.PathTypePrefix
+	mustAdd(t, stores[2], &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "higress-system"}})
+	mustAdd(t, stores[6], &networkingv1.Ingress{
+		ObjectMeta: metav1.ObjectMeta{Name: "mcp-default", Namespace: "higress-system"},
+		Spec: networkingv1.IngressSpec{
+			IngressClassName: &class,
+			Rules: []networkingv1.IngressRule{{
+				IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{Paths: []networkingv1.HTTPIngressPath{{
+					Path: "/", PathType: &pathType,
+					Backend: networkingv1.IngressBackend{Resource: &corev1.TypedLocalObjectReference{
+						APIGroup: &apiGroup, Kind: "McpBridge", Name: "only-bridge",
+					}},
+				}}}},
+			}},
+		},
+	})
+	mustAdd(t, stores[7], object("McpBridge", "higress-system", "only-bridge", map[string]any{
+		"registries": []any{map[string]any{"name": "only", "type": "dns", "domain": "remote.example.com", "port": int64(443)}},
+	}))
+
+	store := &Store{clusterID: "test"}
+	store.rebuild(stores...)
+	if !hasEdge(store.Topology(), "ingress/higress-system/mcp-default", "mcpbridge/higress-system/only-bridge/registry/only", "selects") {
+		t.Fatalf("expected Ingress to select the sole McpBridge registry: %#v", store.Topology().Edges)
+	}
+	if _, ok := soleRegistryID(map[string]string{"a": "registry-a", "b": "registry-b"}); ok {
+		t.Fatal("multiple registries must not be selected implicitly")
+	}
+}
 func TestMcpBridgeRegistryResolvesServiceAndEndpoints(t *testing.T) {
 	stores := emptyStores(8)
 	ready := true

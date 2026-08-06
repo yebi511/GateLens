@@ -96,6 +96,8 @@ const nodeCategories = [
 ]
 const knownKinds = new Set(nodeCategories.flatMap((category) => category.kinds))
 const hiddenKinds = new Set(['Listener'])
+const routingKinds = new Set(['HTTPRoute', 'Ingress', 'VirtualService', 'BBR', 'BodyBasedRouting'])
+const boundaryRelationKinds = new Set(['attaches', 'routes', 'selects', 'transit'])
 const targetSourceKinds = new Set(
   nodeCategories
     .filter((category) => ['routing', 'backend', 'discovery'].includes(category.id))
@@ -161,7 +163,25 @@ const displayEdges = computed(() => {
 })
 const clusterName = (id: string) => clusters.value.find((item) => item.id === id)?.name ?? id
 const currentNodes = computed(() => props.topology.nodes.filter((item) => item.clusterID === activeCluster.value.id))
-const displayableNodes = computed(() => currentNodes.value.filter((item) => !hiddenKinds.has(item.kind)))
+const gatewayReachableNodeIDs = computed(() => reachableNodeIDs(
+  currentNodes.value.filter((item) => item.kind === 'Gateway').map((item) => item.id),
+  'forward',
+))
+const crossClusterRelatedNodeIDs = computed(() => {
+  const related = new Set<string>()
+  for (const edge of crossEdges.value) {
+    if (node(edge.from)?.clusterID === activeCluster.value.id) {
+      for (const id of routingNodesFromBoundary([edge.from], 'reverse')) related.add(id)
+    } else if (node(edge.to)?.clusterID === activeCluster.value.id) {
+      for (const id of routingNodesFromBoundary([edge.to], 'forward')) related.add(id)
+    }
+  }
+  return related
+})
+const displayableNodes = computed(() => currentNodes.value.filter((item) =>
+  !hiddenKinds.has(item.kind) &&
+  (!routingKinds.has(item.kind) || gatewayReachableNodeIDs.value.has(item.id) || crossClusterRelatedNodeIDs.value.has(item.id)),
+))
 const visibleNodes = computed(() => {
   const query = search.value.trim().toLowerCase()
   return displayableNodes.value
@@ -349,32 +369,60 @@ function isCrossEdge(edge: TopologyEdge) {
   const to = node(edge.to)
   return Boolean(from && to && from.clusterID !== to.clusterID)
 }
-function canReachBoundary(startID: string, boundaryID: string, maxDepth = 2) {
-  let frontier = [startID]
-  const visited = new Set(frontier)
-  for (let depth = 0; depth < maxDepth; depth += 1) {
-    const next: string[] = []
-    for (const current of frontier) {
-      for (const edge of props.topology.edges) {
-        if (edge.from !== current || isCrossEdge(edge)) continue
-        const target = node(edge.to)
-        if (!target || target.clusterID !== activeCluster.value.id) continue
-        if (edge.to === boundaryID) return true
-        if (!visited.has(edge.to)) {
-          visited.add(edge.to)
-          next.push(edge.to)
-        }
-      }
+function reachableNodeIDs(startIDs: string[], direction: 'forward' | 'reverse') {
+  const reachable = new Set(startIDs)
+  const frontier = [...startIDs]
+  while (frontier.length) {
+    const current = frontier.shift()
+    if (!current) continue
+    for (const edge of displayEdges.value) {
+      if (isCrossEdge(edge)) continue
+      const source = direction === 'forward' ? edge.from : edge.to
+      const targetID = direction === 'forward' ? edge.to : edge.from
+      if (source !== current || reachable.has(targetID)) continue
+      const target = node(targetID)
+      if (!target || target.clusterID !== activeCluster.value.id) continue
+      reachable.add(targetID)
+      frontier.push(targetID)
     }
-    frontier = next
   }
-  return false
+  return reachable
+}
+function routingNodesFromBoundary(startIDs: string[], direction: 'forward' | 'reverse') {
+  const related = new Set(startIDs.filter((id) => routingKinds.has(node(id)?.kind ?? '')))
+  const visited = new Set(startIDs)
+  const frontier = [...startIDs]
+  while (frontier.length) {
+    const current = frontier.shift()
+    if (!current) continue
+    for (const edge of displayEdges.value) {
+      if (isCrossEdge(edge) || !boundaryRelationKinds.has(edge.relation)) continue
+      const source = direction === 'forward' ? edge.from : edge.to
+      const targetID = direction === 'forward' ? edge.to : edge.from
+      if (source !== current || visited.has(targetID)) continue
+      const target = node(targetID)
+      if (!target || target.clusterID !== activeCluster.value.id) continue
+      visited.add(targetID)
+      if (routingKinds.has(target.kind)) {
+        related.add(targetID)
+        continue
+      }
+      frontier.push(targetID)
+    }
+  }
+  return related
 }
 function boundaryEdgesFor(item: TopologyNode) {
   const matches = crossEdges.value.filter((edge) => {
     if (edge.from === item.id || edge.to === item.id) return true
     if (!transferAnchorKinds.has(item.kind)) return false
-    return node(edge.from)?.clusterID === activeCluster.value.id && canReachBoundary(item.id, edge.from)
+    if (node(edge.from)?.clusterID === activeCluster.value.id) {
+      return routingNodesFromBoundary([edge.from], 'reverse').has(item.id)
+    }
+    if (node(edge.to)?.clusterID === activeCluster.value.id) {
+      return routingNodesFromBoundary([edge.to], 'forward').has(item.id)
+    }
+    return false
   })
   return [...new Map(matches.map((edge) => [`${edge.from}:${edge.to}`, edge])).values()]
 }
