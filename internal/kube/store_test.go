@@ -127,7 +127,7 @@ func TestInferencePoolBuildsEndpointPickerServiceEndpointChain(t *testing.T) {
 	poolID := "inferencepool/inference/qwen"
 	eppID := "endpoint-picker/inference/qwen-epp"
 	serviceID := "service/inference/qwen-service"
-	if !hasEdge(store.Topology(), poolID, eppID, "discovers") || !hasEdge(store.Topology(), eppID, serviceID, "selects") || !hasEdge(store.Topology(), serviceID, "endpoint/inference/10.0.0.9", "selects") {
+	if !hasEdge(store.Topology(), poolID, eppID, "discovers") || !hasEdge(store.Topology(), eppID, serviceID, "selects") || !hasEdge(store.Topology(), serviceID, "endpoint/inference/qwen-service/10.0.0.9", "selects") {
 		t.Fatalf("missing InferencePool -> EPP -> Service -> Endpoint chain: %#v", store.Topology().Edges)
 	}
 }

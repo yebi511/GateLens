@@ -57,21 +57,36 @@ func TestRebuildCollectsCrossClusterConfigurationEvidence(t *testing.T) {
 	}
 }
 
-func TestEndpointReadinessSetsClusterID(t *testing.T) {
+func TestEndpointReadinessUsesTargetIdentityAndAddressMetadata(t *testing.T) {
 	ready := true
+	nodeName := "gpu-a100-01"
+	portName := "http"
+	port := int32(8000)
 	slice := &discoveryv1.EndpointSlice{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "model-a", Namespace: "inference",
 			Labels: map[string]string{discoveryv1.LabelServiceName: "model"},
 		},
+		Ports: []discoveryv1.EndpointPort{{Name: &portName, Port: &port}},
 		Endpoints: []discoveryv1.Endpoint{{
 			Addresses:  []string{"10.0.0.8"},
 			Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+			NodeName:   &nodeName,
+			TargetRef:  &corev1.ObjectReference{Kind: "Pod", Namespace: "inference", Name: "qwen-vllm-7d9c8f-x2k4p"},
 		}},
 	}
 	_, nodes := endpointReadiness([]any{slice}, "gpu")
-	if got := nodes["inference/model"][0].ClusterID; got != "gpu" {
-		t.Fatalf("clusterID=%q, want gpu", got)
+	endpoint := nodes["inference/model"][0]
+	if endpoint.ClusterID != "gpu" || endpoint.Name != "qwen-vllm-7d9c8f-x2k4p" || endpoint.ID != "endpoint/inference/model/10.0.0.8" {
+		t.Fatalf("endpoint=%#v", endpoint)
+	}
+	for _, condition := range []string{
+		"Service=inference/model", "Address=10.0.0.8", "Port=8000",
+		"PortName=http", "Node=gpu-a100-01", "TargetRef=Pod/inference/qwen-vllm-7d9c8f-x2k4p",
+	} {
+		if !hasCondition(endpoint.Conditions, condition) {
+			t.Fatalf("missing condition %q in %#v", condition, endpoint.Conditions)
+		}
 	}
 }
 func TestHigressExternalNameDoesNotRequireEndpoints(t *testing.T) {

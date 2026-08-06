@@ -363,6 +363,7 @@ tbody tr:hover { background: #f8fbfa; }
 .federated-node strong, .federated-node small, .federated-node em { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .federated-node strong { font-size: 11px; }
 .federated-node small { margin-top: 4px; color: var(--muted); font-size: 9px; }
+.federated-node small span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .federated-node em { grid-column: 1 / -1; margin-top: 4px; color: var(--green); font-size: 9px; font-style: normal; }
 .federated-node.node-warning em { color: var(--amber); }
 .federated-node.node-error em { color: var(--red); }

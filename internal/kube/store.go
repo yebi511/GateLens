@@ -492,7 +492,8 @@ func endpointReadiness(items []any, clusterID string) (map[string]int, map[strin
 		if !ok {
 			continue
 		}
-		key := slice.Namespace + "/" + slice.Labels[discoveryv1.LabelServiceName]
+		serviceName := slice.Labels[discoveryv1.LabelServiceName]
+		key := slice.Namespace + "/" + serviceName
 		for _, endpoint := range slice.Endpoints {
 			isReady := endpoint.Conditions.Ready == nil || *endpoint.Conditions.Ready
 			status, text := domain.StatusWarning, "NotReady"
@@ -502,15 +503,73 @@ func endpointReadiness(items []any, clusterID string) (map[string]int, map[strin
 				ready[key]++
 			}
 			for _, address := range endpoint.Addresses {
-				id := "endpoint/" + slice.Namespace + "/" + address
-				nodes[key] = append(nodes[key], domain.TopologyNode{ID: id, Name: address, Kind: "Endpoint", Namespace: slice.Namespace, Status: status, StatusText: text, Summary: "EndpointSlice " + slice.Name + " 中的后端地址。", Conditions: []string{"Ready=" + fmt.Sprint(isReady)}, Source: "discovery.k8s.io/v1 EndpointSlice"})
-				last := len(nodes[key]) - 1
-				nodes[key][last].ClusterID = clusterID
+				name, summary, conditions := endpointIdentity(slice, endpoint, serviceName, address, isReady)
+				id := "endpoint/" + slice.Namespace + "/"
+				if serviceName != "" {
+					id += serviceName + "/"
+				}
+				id += address
+				nodes[key] = append(nodes[key], domain.TopologyNode{
+					ID: id, Name: name, Kind: "Endpoint", Namespace: slice.Namespace, ClusterID: clusterID,
+					Status: status, StatusText: text, Summary: summary, Conditions: conditions,
+					Source: "discovery.k8s.io/v1 EndpointSlice",
+				})
 			}
 		}
 	}
 	return ready, nodes
 }
+func endpointIdentity(slice *discoveryv1.EndpointSlice, endpoint discoveryv1.Endpoint, serviceName, address string, isReady bool) (string, string, []string) {
+	service := slice.Namespace + "/" + serviceName
+	name := address
+	summary := fmt.Sprintf("Service %s 的 Endpoint 地址 %s，来自 EndpointSlice %s。", service, address, slice.Name)
+	conditions := []string{
+		"Service=" + service,
+		"Address=" + address,
+		"EndpointSlice=" + slice.Namespace + "/" + slice.Name,
+		"Ready=" + fmt.Sprint(isReady),
+	}
+	if endpoint.TargetRef != nil && endpoint.TargetRef.Name != "" {
+		targetNamespace := endpoint.TargetRef.Namespace
+		if targetNamespace == "" {
+			targetNamespace = slice.Namespace
+		}
+		targetKind := endpoint.TargetRef.Kind
+		if targetKind == "" {
+			targetKind = "Object"
+		}
+		name = endpoint.TargetRef.Name
+		target := targetKind + "/" + targetNamespace + "/" + endpoint.TargetRef.Name
+		conditions = append(conditions, "TargetRef="+target)
+		summary = fmt.Sprintf("Service %s 的 %s %s，地址 %s，来自 EndpointSlice %s。", service, targetKind, endpoint.TargetRef.Name, address, slice.Name)
+	} else if endpoint.Hostname != nil && *endpoint.Hostname != "" {
+		name = *endpoint.Hostname
+		conditions = append(conditions, "Hostname="+*endpoint.Hostname)
+	}
+	if endpoint.NodeName != nil && *endpoint.NodeName != "" {
+		conditions = append(conditions, "Node="+*endpoint.NodeName)
+	}
+	for _, port := range slice.Ports {
+		if port.Port == nil {
+			continue
+		}
+		conditions = append(conditions, fmt.Sprintf("Port=%d", *port.Port))
+		if port.Name != nil && *port.Name != "" {
+			conditions = append(conditions, "PortName="+*port.Name)
+		}
+		if port.Protocol != nil {
+			conditions = append(conditions, "Protocol="+string(*port.Protocol))
+		}
+	}
+	if endpoint.Conditions.Serving != nil {
+		conditions = append(conditions, "Serving="+fmt.Sprint(*endpoint.Conditions.Serving))
+	}
+	if endpoint.Conditions.Terminating != nil {
+		conditions = append(conditions, "Terminating="+fmt.Sprint(*endpoint.Conditions.Terminating))
+	}
+	return name, summary, conditions
+}
+
 func collectGrants(items []any) map[string]bool {
 	result := map[string]bool{}
 	for _, item := range items {

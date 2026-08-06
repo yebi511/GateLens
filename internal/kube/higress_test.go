@@ -110,7 +110,7 @@ func TestMcpBridgeRegistryResolvesServiceAndEndpoints(t *testing.T) {
 	if !hasEdge(store.Topology(), registryID, "service/inference/model-server", "resolves") {
 		t.Fatalf("missing Registry -> Service edge: %#v", store.Topology().Edges)
 	}
-	if !hasEdge(store.Topology(), "service/inference/model-server", "endpoint/inference/10.0.0.8", "selects") {
+	if !hasEdge(store.Topology(), "service/inference/model-server", "endpoint/inference/model-server/10.0.0.8", "selects") {
 		t.Fatalf("missing Service -> Endpoint edge: %#v", store.Topology().Edges)
 	}
 	if len(store.Findings()) != 0 {

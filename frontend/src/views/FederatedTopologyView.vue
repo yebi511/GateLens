@@ -210,6 +210,31 @@ const stateLabel = computed(() => activeCluster.value.connectionState === 'conne
 const relation = (edge: TopologyEdge) => `${node(edge.from)?.name ?? edge.from} -> ${node(edge.to)?.name ?? edge.to}`
 const hasEnvoyRuntime = computed(() => selected.value?.kind === 'Gateway' && selected.value.conditions.includes('EnvoyConfig=available'))
 
+function conditionValue(item: TopologyNode, prefix: string) {
+  const condition = item.conditions.find((value) => value.startsWith(prefix))
+  return condition?.slice(prefix.length) ?? ''
+}
+
+function nodeSubtitle(item: TopologyNode) {
+  if (item.kind !== 'Endpoint') return [`${item.namespace || 'cluster-scoped'} / ${item.kind}`]
+  const service = conditionValue(item, 'Service=')
+  const address = conditionValue(item, 'Address=')
+  const port = conditionValue(item, 'Port=')
+  const endpoint = address ? `${address}${port ? `:${port}` : ''}` : ''
+  const serviceName = service.split('/').pop() || service
+  return [serviceName, endpoint].filter(Boolean).length
+    ? [serviceName, endpoint].filter(Boolean)
+    : [`${item.namespace || 'cluster-scoped'} / Endpoint`]
+}
+
+function nodeSubtitleTitle(item: TopologyNode) {
+  if (item.kind !== 'Endpoint') return nodeSubtitle(item).join('')
+  const service = conditionValue(item, 'Service=')
+  const address = conditionValue(item, 'Address=')
+  const port = conditionValue(item, 'Port=')
+  return [service, address ? `${address}${port ? `:${port}` : ''}` : ''].filter(Boolean).join(' · ')
+}
+
 const relationLabels: Record<string, string> = {
   owns: '包含',
   attaches: '挂载',
@@ -490,8 +515,10 @@ onBeforeUnmount(() => {
                   >
                     <component :is="icons[item.kind] || Box" :size="15" aria-hidden="true" />
                     <span>
-                      <strong>{{ item.name }}</strong>
-                      <small>{{ item.namespace || 'cluster-scoped' }} / {{ item.kind }}</small>
+                      <strong :title="item.name">{{ item.name }}</strong>
+                      <small :title="nodeSubtitleTitle(item)">
+                        <span v-for="line in nodeSubtitle(item)" :key="line">{{ line }}</span>
+                      </small>
                     </span>
                     <em>{{ item.statusText }}</em>
                     <span v-if="boundaryEdgesFor(item)[0]" class="boundary-target">
