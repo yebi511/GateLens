@@ -22,9 +22,14 @@ flowchart LR
   I -->|"backend.resource McpBridge"| M["McpBridge"]
   M -->|"discovers"| R["Registry"]
   I -->|"selects: higress.io/destination"| R
+  R -->|"cluster Service DNS"| S["Service"]
+  S --> E["Endpoint"]
+  R -->|"external DNS"| X["ExternalTarget"]
 ```
 
 `Ingress.backend.resource` 只有在 `apiGroup=networking.higress.io`、`kind=McpBridge` 时才被解析为 MCP 后端。普通 `backend.service` 保持同 Namespace 的 Kubernetes Ingress 语义。`higress.io/destination` 使用 `registryName.registryType`（例如 `github.dns`）匹配 `spec.registries`，作为明确选择某注册中心的配置证据。
+
+Registry 的 `domain` 会优先按 `<service>`、`<service>.<namespace>` 或 `<service>.<namespace>.svc.<cluster-domain>` 解析集群内 Service，并继续展开对应 EndpointSlice。无法匹配集群 Service 的域名才表示为 `ExternalTarget`。
 
 ## 健康发现和请求解释
 

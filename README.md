@@ -19,7 +19,7 @@ GateLens 以只读方式监听 Kubernetes 资源，构建带来源证据的有�
 - 每个集群由只读 Agent 监听 Namespace、Service、EndpointSlice 与网关配置，中央 Server 汇总快照。
 - 动态监听 Gateway API `Gateway`、`HTTPRoute` 与 `ReferenceGrant`。
 - 监听 `IngressClass=higress` 及 Higress `McpBridge` 与 registry 配置。
-- 展示 Gateway、Listener、HTTPRoute/Ingress、Service/McpBridge 与 Endpoint/Registry 的跨命名空间拓扑。
+- 展示 Gateway、Listener、HTTPRoute/Ingress、Service/InferencePool/McpBridge 与 Endpoint/Pod/Registry 的跨命名空间拓扑。
 - 校验 ParentRef、BackendRef、ReferenceGrant 和 Ready Endpoint。
 - 根据 Host、Path 与 Method 对请求进行静态解释。
 - 提供资源搜索、配置健康清单和快照上下文。
@@ -152,6 +152,7 @@ sh deploy/docker-server.sh down
 - Gateway API CRD 是可选的；未安装时 Agent 仍会汇总核心 Kubernetes 资源，安装后可提供 Gateway API 拓扑。
 - 若已安装，当前版本读取 `gateway.networking.k8s.io/v1` 的 Gateway/HTTPRoute，以及 `v1beta1` 的 ReferenceGrant。
 - 若要采集 Higress 配置，集群还需安装 `networking.higress.io/v1` McpBridge CRD。
+- 若要采集推理池，集群还需安装 `inference.networking.k8s.io/v1` InferencePool CRD。
 - API 与 Web 镜像已推送到集群可访问的仓库。
 
 ```bash

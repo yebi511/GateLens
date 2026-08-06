@@ -6,7 +6,9 @@
 flowchart LR
   C[Client Request] --> G[Gateway] --> L[Listener] --> R[Route Attachment]
   R --> M[Route Match] --> F[Ordered Filters] --> B[Backend Candidates]
-  B --> P[Inference Policy / Pool] --> S[Service] --> E[Endpoint] --> U[Model Server]
+  B --> P[InferencePool] --> D[EndpointPicker / EPP]
+  D --> S[Service] --> E[Endpoint] --> U[Model Server]
+  D -. selector fallback .-> U
 ```
 
 此图服务于请求流转解释，不是 Kubernetes 对象的一一对应树。一个节点可关联多个对象，一个对象也可产生多条带不同条件的边。

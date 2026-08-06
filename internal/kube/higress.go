@@ -14,7 +14,7 @@ import (
 
 var mcpBridgesGVR = schema.GroupVersionResource{Group: "networking.higress.io", Version: "v1", Resource: "mcpbridges"}
 
-func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []any, services map[string]*networkingService) {
+func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []any, services map[string]*networkingService, endpoints map[string][]domain.TopologyNode) {
 	bridgeIDs := map[string]string{}
 	registryIDs := map[string]map[string]string{}
 	for _, item := range bridgeItems {
@@ -51,17 +51,31 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: registryID, Name: name, Kind: "Registry", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: registryType + "://" + domainName + ":" + port, Conditions: conditions, Source: "McpBridge.spec.registries"})
 			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: id, To: registryID, Relation: "discovers"})
 			if domainName != "" {
-				targetID := registryID + "/target"
-				targetConditions := []string{"Address=" + domainName, "Port=" + port}
-				if protocol != "" {
-					targetConditions = append(targetConditions, "Protocol="+protocol)
+				if serviceKey, ok := serviceForRegistryDomain(domainName, bridge.GetNamespace(), services); ok {
+					backend := services[serviceKey]
+					serviceNode := backend.node
+					if backend.readyEndpoints == 0 && !backend.external {
+						serviceNode.Status = domain.StatusError
+						serviceNode.StatusText = "无 Ready Endpoint"
+						serviceNode.Summary = "Registry 已解析到 Service，但 Service 没有可用 Endpoint。"
+						addFinding(snap, domain.StatusError, "Registry Service 没有可用 Endpoint", serviceKey, "ReadyEndpoints=0", registryID)
+					}
+					snap.topology.Nodes = appendUnique(snap.topology.Nodes, serviceNode)
+					snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: registryID, To: serviceNode.ID, Relation: "resolves", Evidence: "McpBridge registry domain=" + domainName})
+					appendServiceEndpoints(snap, serviceNode.ID, endpoints[serviceKey])
+				} else {
+					targetID := registryID + "/target"
+					targetConditions := []string{"Address=" + domainName, "Port=" + port}
+					if protocol != "" {
+						targetConditions = append(targetConditions, "Protocol="+protocol)
+					}
+					snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
+						ID: targetID, Name: domainName, Kind: "ExternalTarget", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID,
+						Status: domain.StatusHealthy, StatusText: "Configured", Summary: "Configured target " + domainName + ":" + port,
+						Conditions: targetConditions, Source: "McpBridge.spec.registries[].domain",
+					})
+					snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: registryID, To: targetID, Relation: "resolves"})
 				}
-				snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-					ID: targetID, Name: domainName, Kind: "ExternalTarget", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID,
-					Status: domain.StatusHealthy, StatusText: "Configured", Summary: "Configured target " + domainName + ":" + port,
-					Conditions: targetConditions, Source: "McpBridge.spec.registries[].domain",
-				})
-				snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: registryID, To: targetID, Relation: "resolves"})
 			}
 		}
 	}
@@ -109,6 +123,7 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 						backendIDs = append(backendIDs, serviceNode.ID)
 						snap.topology.Nodes = appendUnique(snap.topology.Nodes, serviceNode)
 						snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: ingressID, To: serviceNode.ID, Relation: "routes"})
+						appendServiceEndpoints(snap, serviceNode.ID, endpoints[key])
 					} else {
 						addFinding(snap, domain.StatusError, "Ingress 后端 Service 不存在", ingress.Namespace+"/"+ingress.Name, "backend.service="+key, ingressID)
 					}
@@ -120,6 +135,31 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 				snap.routes = append(snap.routes, routeRule{routeID: ingressID, namespace: ingress.Namespace, hostnames: nonEmpty(rule.Host), pathType: pathType, path: defaultString(path.Path, "/"), backendIDs: backendIDs})
 			}
 		}
+	}
+}
+
+func serviceForRegistryDomain(domain, defaultNamespace string, services map[string]*networkingService) (string, bool) {
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	parts := strings.Split(host, ".")
+	var key string
+	switch {
+	case len(parts) == 1:
+		key = defaultNamespace + "/" + parts[0]
+	case len(parts) == 2:
+		key = parts[1] + "/" + parts[0]
+	case len(parts) >= 3 && parts[2] == "svc":
+		key = parts[1] + "/" + parts[0]
+	default:
+		return "", false
+	}
+	_, ok := services[key]
+	return key, ok
+}
+
+func appendServiceEndpoints(snap *snapshot, serviceID string, endpoints []domain.TopologyNode) {
+	for _, endpoint := range endpoints {
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, endpoint)
+		snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: serviceID, To: endpoint.ID, Relation: "selects"})
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -73,6 +74,47 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	result := store.Explain(domain.RouteExplanationRequest{Host: "mcp.example.com", Path: "/v1/tools", Method: "GET", Namespace: "higress-system"})
 	if result.Outcome != "Routed" {
 		t.Fatalf("outcome=%s, want Routed: %#v", result.Outcome, result)
+	}
+}
+
+func TestMcpBridgeRegistryResolvesServiceAndEndpoints(t *testing.T) {
+	stores := emptyStores(8)
+	ready := true
+	mustAdd(t, stores[0], &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "model-server", Namespace: "inference"}})
+	mustAdd(t, stores[1], &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "model-server-a", Namespace: "inference",
+			Labels: map[string]string{discoveryv1.LabelServiceName: "model-server"},
+		},
+		Endpoints: []discoveryv1.Endpoint{{
+			Addresses: []string{"10.0.0.8"}, Conditions: discoveryv1.EndpointConditions{Ready: &ready},
+		}},
+	})
+	mustAdd(t, stores[2], &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gateway"}})
+	mustAdd(t, stores[2], &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "inference"}})
+	mustAdd(t, stores[7], object("McpBridge", "gateway", "model-bridge", map[string]any{
+		"registries": []any{map[string]any{
+			"name": "model", "type": "dns", "domain": "model-server.inference.svc.cluster.local", "port": int64(8000),
+		}},
+	}))
+
+	store := &Store{clusterID: "test"}
+	store.rebuild(stores...)
+
+	requireNode(t, store.Topology(), "Service", "model-server")
+	requireNode(t, store.Topology(), "Endpoint", "10.0.0.8")
+	if hasNode(store.Topology(), "ExternalTarget", "model-server.inference.svc.cluster.local") {
+		t.Fatalf("cluster Service DNS was represented as an ExternalTarget: %#v", store.Topology().Nodes)
+	}
+	registryID := "mcpbridge/gateway/model-bridge/registry/model"
+	if !hasEdge(store.Topology(), registryID, "service/inference/model-server", "resolves") {
+		t.Fatalf("missing Registry -> Service edge: %#v", store.Topology().Edges)
+	}
+	if !hasEdge(store.Topology(), "service/inference/model-server", "endpoint/inference/10.0.0.8", "selects") {
+		t.Fatalf("missing Service -> Endpoint edge: %#v", store.Topology().Edges)
+	}
+	if len(store.Findings()) != 0 {
+		t.Fatalf("findings=%#v", store.Findings())
 	}
 }
 

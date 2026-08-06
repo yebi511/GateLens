@@ -83,7 +83,7 @@ func (s *Store) Run(ctx context.Context) error {
 	pods := coreFactory.Core().V1().Pods().Informer()
 	deployments := coreFactory.Apps().V1().Deployments().Informer()
 
-	optionalResources := []schema.GroupVersionResource{gatewaysGVR, gatewayClassesGVR, routesGVR, grantsGVR, mcpBridgesGVR}
+	optionalResources := []schema.GroupVersionResource{gatewaysGVR, gatewayClassesGVR, routesGVR, grantsGVR, mcpBridgesGVR, inferencePoolsGVR}
 	available := discoverDynamicResources(s.core.Discovery(), optionalResources)
 	emptyStore := func() cache.Store { return cache.NewStore(cache.MetaNamespaceKeyFunc) }
 	stores := []cache.Store{
@@ -99,6 +99,7 @@ func (s *Store) Run(ctx context.Context) error {
 		deployments.GetStore(),
 		pods.GetStore(),
 		ingressClasses.GetStore(),
+		emptyStore(),
 	}
 
 	allInformers := []cache.SharedIndexInformer{services, endpoints, namespaces, ingresses, ingressClasses, pods, deployments}
@@ -118,6 +119,7 @@ func (s *Store) Run(ctx context.Context) error {
 	addDynamicInformer(grantsGVR, 5)
 	addDynamicInformer(mcpBridgesGVR, 7)
 	addDynamicInformer(gatewayClassesGVR, 8)
+	addDynamicInformer(inferencePoolsGVR, 12)
 
 	s.capabilities = []string{"endpointslice", "higress-ingress", "envoy-auto-discovery"}
 	if available[gatewaysGVR] || available[routesGVR] || available[gatewayClassesGVR] {
@@ -128,6 +130,9 @@ func (s *Store) Run(ctx context.Context) error {
 	}
 	if available[mcpBridgesGVR] {
 		s.capabilities = append(s.capabilities, "higress-mcpbridge")
+	}
+	if available[inferencePoolsGVR] {
+		s.capabilities = append(s.capabilities, "inference-pool")
 	}
 
 	ready := make(chan struct{})
@@ -217,7 +222,7 @@ func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExpl
 
 func (s *Store) rebuild(stores ...cache.Store) {
 	serviceStore, endpointStore, namespaceStore, gatewayStore, routeStore, grantStore := stores[0], stores[1], stores[2], stores[3], stores[4], stores[5]
-	var ingressStore, mcpBridgeStore, gatewayClassStore, deploymentStore, podStore, ingressClassStore cache.Store
+	var ingressStore, mcpBridgeStore, gatewayClassStore, deploymentStore, podStore, ingressClassStore, inferencePoolStore cache.Store
 	if len(stores) > 6 {
 		ingressStore = stores[6]
 	}
@@ -236,6 +241,9 @@ func (s *Store) rebuild(stores ...cache.Store) {
 	if len(stores) > 11 {
 		ingressClassStore = stores[11]
 	}
+	if len(stores) > 12 {
+		inferencePoolStore = stores[12]
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	snap := snapshot{runtimes: map[string]gatewayRuntime{}, context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: append([]string(nil), s.capabilities...)}}
 	for _, item := range namespaceStore.List() {
@@ -252,6 +260,14 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		}
 	}
 	ready, endpointsByService := endpointReadiness(endpointStore.List(), s.clusterID)
+	inferencePools := map[string]*unstructured.Unstructured{}
+	if inferencePoolStore != nil {
+		for _, item := range inferencePoolStore.List() {
+			if pool, ok := item.(*unstructured.Unstructured); ok {
+				inferencePools[pool.GetNamespace()+"/"+pool.GetName()] = pool
+			}
+		}
+	}
 	gatewayClasses := map[string]string{}
 	if gatewayClassStore != nil {
 		gatewayClasses = collectGatewayClasses(gatewayClassStore.List())
@@ -315,7 +331,11 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		rules, _, _ := unstructured.NestedSlice(obj.Object, "spec", "rules")
 		for _, rawRule := range rules {
 			rule, _ := rawRule.(map[string]any)
-			backendIDs := s.addBackends(&snap, obj, routeID, rule, services, ready, endpointsByService, grants)
+			var podItems []any
+			if podStore != nil {
+				podItems = podStore.List()
+			}
+			backendIDs := s.addBackends(&snap, obj, routeID, rule, services, inferencePools, ready, endpointsByService, podItems, grants)
 			matches, _ := rule["matches"].([]any)
 			if len(matches) == 0 {
 				snap.routes = append(snap.routes, routeRule{routeID: routeID, namespace: obj.GetNamespace(), hostnames: hostnames, pathType: "PathPrefix", path: "/", backendIDs: backendIDs})
@@ -348,7 +368,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 				serviceRefs[key].node.Conditions = append(serviceRefs[key].node.Conditions, "ExternalName="+svc.Spec.ExternalName)
 			}
 		}
-		s.addHigressResources(&snap, ingressStore.List(), mcpBridgeStore.List(), serviceRefs)
+		s.addHigressResources(&snap, ingressStore.List(), mcpBridgeStore.List(), serviceRefs, endpointsByService)
 	}
 	if ingressStore != nil {
 		var ingressClasses []any
@@ -370,20 +390,42 @@ func (s *Store) rebuild(stores ...cache.Store) {
 	s.mutex.Unlock()
 }
 
-func (s *Store) addBackends(snap *snapshot, obj *unstructured.Unstructured, routeID string, rule map[string]any, services map[string]*corev1.Service, ready map[string]int, endpoints map[string][]domain.TopologyNode, grants map[string]bool) []string {
+func (s *Store) addBackends(snap *snapshot, obj *unstructured.Unstructured, routeID string, rule map[string]any, services map[string]*corev1.Service, inferencePools map[string]*unstructured.Unstructured, ready map[string]int, endpoints map[string][]domain.TopologyNode, pods []any, grants map[string]bool) []string {
 	refs, _ := rule["backendRefs"].([]any)
 	ids := []string{}
 	for _, raw := range refs {
 		ref, _ := raw.(map[string]any)
 		backendNS := stringValue(ref, "namespace", obj.GetNamespace())
 		backendName := stringValue(ref, "name", "")
+		backendGroup := stringValue(ref, "group", "")
+		backendKind := stringValue(ref, "kind", "Service")
 		key := backendNS + "/" + backendName
+		if backendGroup == "inference.networking.k8s.io" && backendKind == "InferencePool" {
+			pool := inferencePools[key]
+			if pool == nil {
+				addFinding(snap, domain.StatusError, "后端 InferencePool 不存在", obj.GetNamespace()+"/"+obj.GetName(), "BackendRef="+key, routeID)
+				continue
+			}
+			allowed := backendNS == obj.GetNamespace() || grantsAllow(grants, obj.GetNamespace(), backendNS, backendGroup, backendKind, backendName)
+			poolID := s.addInferencePool(snap, pool, services, endpoints, pods)
+			ids = append(ids, poolID)
+			if !allowed {
+				markNodeError(snap, poolID, "ReferenceGrant 缺失", "跨命名空间 InferencePool BackendRef 未被 ReferenceGrant 允许。")
+				addFinding(snap, domain.StatusError, "跨命名空间引用未授权", obj.GetNamespace()+"/"+obj.GetName(), "BackendRef="+key, routeID)
+			}
+			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: routeID, To: poolID, Relation: "routes"})
+			continue
+		}
+		if (backendGroup != "" && backendGroup != "core") || backendKind != "Service" {
+			addFinding(snap, domain.StatusWarning, "不支持的 HTTPRoute 后端类型", obj.GetNamespace()+"/"+obj.GetName(), "BackendRef="+backendGroup+"/"+backendKind+" "+key, routeID)
+			continue
+		}
 		svc := services[key]
 		if svc == nil {
 			addFinding(snap, domain.StatusError, "后端 Service 不存在", obj.GetNamespace()+"/"+obj.GetName(), "BackendRef="+key, routeID)
 			continue
 		}
-		allowed := backendNS == obj.GetNamespace() || grants[obj.GetNamespace()+"->"+backendNS+"/"+backendName] || grants[obj.GetNamespace()+"->"+backendNS+"/*"]
+		allowed := backendNS == obj.GetNamespace() || grantsAllow(grants, obj.GetNamespace(), backendNS, "", "Service", backendName)
 		status, text, summary := domain.StatusHealthy, "Ready", fmt.Sprintf("Service 有 %d 个 Ready Endpoint。", ready[key])
 		if svc.Spec.Type == corev1.ServiceTypeExternalName && svc.Spec.ExternalName != "" {
 			status, text := domain.StatusHealthy, "Configured"
@@ -486,15 +528,34 @@ func collectGrants(items []any) map[string]bool {
 			}
 			for _, rawTo := range to {
 				t, _ := rawTo.(map[string]any)
-				if stringValue(t, "group", "") != "" || stringValue(t, "kind", "") != "Service" {
-					continue
-				}
+				group := stringValue(t, "group", "")
+				kind := stringValue(t, "kind", "")
 				name := stringValue(t, "name", "*")
-				result[stringValue(f, "namespace", "")+"->"+obj.GetNamespace()+"/"+name] = true
+				result[grantKey(stringValue(f, "namespace", ""), obj.GetNamespace(), group, kind, name)] = true
 			}
 		}
 	}
 	return result
+}
+
+func grantKey(fromNamespace, toNamespace, group, kind, name string) string {
+	return fromNamespace + "->" + toNamespace + "/" + group + "/" + kind + "/" + name
+}
+
+func grantsAllow(grants map[string]bool, fromNamespace, toNamespace, group, kind, name string) bool {
+	return grants[grantKey(fromNamespace, toNamespace, group, kind, name)] || grants[grantKey(fromNamespace, toNamespace, group, kind, "*")]
+}
+
+func markNodeError(snap *snapshot, id, statusText, summary string) {
+	for index := range snap.topology.Nodes {
+		if snap.topology.Nodes[index].ID != id {
+			continue
+		}
+		snap.topology.Nodes[index].Status = domain.StatusError
+		snap.topology.Nodes[index].StatusText = statusText
+		snap.topology.Nodes[index].Summary = summary
+		return
+	}
 }
 
 func gatewayAddressConditions(obj *unstructured.Unstructured) []string {
