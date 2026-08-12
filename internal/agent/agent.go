@@ -181,7 +181,9 @@ func (r *Runner) executeCommand(ctx context.Context, command domain.AgentCommand
 	result := domain.AgentCommandResult{CommandID: command.ID, ClusterID: r.config.ClusterID}
 	commandCtx := ctx
 	cancel := func() {}
-	if deadline, err := time.Parse(time.RFC3339Nano, command.Deadline); err == nil {
+	if command.ExecutionTimeoutSeconds > 0 {
+		commandCtx, cancel = context.WithTimeout(ctx, time.Duration(command.ExecutionTimeoutSeconds)*time.Second)
+	} else if deadline, err := time.Parse(time.RFC3339Nano, command.Deadline); err == nil {
 		if time.Now().After(deadline) {
 			result.Error = "command deadline exceeded before execution"
 			return result

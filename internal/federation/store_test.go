@@ -225,6 +225,30 @@ func TestStoreRoutesEnvoyConfigThroughOwningAgent(t *testing.T) {
 	}
 }
 
+func TestNextAgentCommandSkipsCanceledQueuedCommand(t *testing.T) {
+	now := time.Now().UTC()
+	store := NewStore("federation", 2*time.Minute)
+	store.now = func() time.Time { return now }
+	mustReceive(t, store, snapshotFor("gpu-prod", "gpu-1", now, nil))
+
+	queue := make(chan domain.AgentCommand, 2)
+	deadline := now.Add(time.Minute).Format(time.RFC3339Nano)
+	queue <- domain.AgentCommand{ID: "canceled", ClusterID: "gpu-prod", Deadline: deadline}
+	queue <- domain.AgentCommand{ID: "live", ClusterID: "gpu-prod", Deadline: deadline}
+	store.commandQueues["gpu-prod"] = queue
+	store.pendingCommands["live"] = pendingCommand{clusterID: "gpu-prod", result: make(chan domain.AgentCommandResult, 1)}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	command, ok, err := store.NextAgentCommand(ctx, "gpu-prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || command.ID != "live" {
+		t.Fatalf("command=%#v ok=%v", command, ok)
+	}
+}
+
 func TestStoreRejectsUnknownFederatedGateway(t *testing.T) {
 	store := NewStore("federation", time.Minute)
 	if _, err := store.EnvoyConfig(context.Background(), "missing::gateway/default/not-found"); err == nil {

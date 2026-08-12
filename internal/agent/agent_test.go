@@ -148,3 +148,22 @@ func TestAgentExecutesAndReturnsEnvoyCommand(t *testing.T) {
 		t.Fatalf("received=%#v", received)
 	}
 }
+
+func TestAgentUsesRelativeExecutionTimeoutAcrossClockSkew(t *testing.T) {
+	runner, err := New(demo.NewStore(), Config{ServerURL: "http://gatelens.example", ClusterID: "gpu-prod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := runner.executeCommand(context.Background(), domain.AgentCommand{
+		ID:                      "command-skewed-clock",
+		ClusterID:               "gpu-prod",
+		Kind:                    domain.AgentCommandEnvoyConfig,
+		GatewayID:               "gateway/ai-platform/ai-public-gateway",
+		Deadline:                time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano),
+		ExecutionTimeoutSeconds: 1,
+	})
+	if result.Error != "" || result.Config == nil {
+		t.Fatalf("result=%#v", result)
+	}
+}

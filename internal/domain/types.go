@@ -232,11 +232,12 @@ type AgentSnapshot struct {
 const AgentCommandEnvoyConfig = "envoy-config"
 
 type AgentCommand struct {
-	ID        string `json:"id"`
-	ClusterID string `json:"clusterID"`
-	Kind      string `json:"kind"`
-	GatewayID string `json:"gatewayID"`
-	Deadline  string `json:"deadline"`
+	ID                      string `json:"id"`
+	ClusterID               string `json:"clusterID"`
+	Kind                    string `json:"kind"`
+	GatewayID               string `json:"gatewayID"`
+	Deadline                string `json:"deadline"`
+	ExecutionTimeoutSeconds int    `json:"executionTimeoutSeconds,omitempty"`
 }
 
 type AgentCommandResult struct {

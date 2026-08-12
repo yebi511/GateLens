@@ -137,10 +137,11 @@ func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExpl
 }
 
 const (
-	agentCommandPollWait  = 10 * time.Second
-	envoyCommandDeadline  = 35 * time.Second
-	envoyCommandWait      = 45 * time.Second
-	agentCommandQueueSize = 32
+	agentCommandPollWait         = 10 * time.Second
+	envoyCommandQueueWait        = 45 * time.Second
+	envoyCommandExecutionTimeout = 35 * time.Second
+	envoyCommandWait             = envoyCommandQueueWait + envoyCommandExecutionTimeout + 5*time.Second
+	agentCommandQueueSize        = 32
 )
 
 func (s *Store) EnvoyConfig(ctx context.Context, gatewayID string) (domain.EnvoyConfig, error) {
@@ -154,11 +155,12 @@ func (s *Store) EnvoyConfig(ctx context.Context, gatewayID string) (domain.Envoy
 	}
 
 	command := domain.AgentCommand{
-		ID:        commandID,
-		ClusterID: clusterID,
-		Kind:      domain.AgentCommandEnvoyConfig,
-		GatewayID: localGatewayID,
-		Deadline:  time.Now().Add(envoyCommandDeadline).UTC().Format(time.RFC3339Nano),
+		ID:                      commandID,
+		ClusterID:               clusterID,
+		Kind:                    domain.AgentCommandEnvoyConfig,
+		GatewayID:               localGatewayID,
+		Deadline:                s.now().Add(envoyCommandQueueWait).UTC().Format(time.RFC3339Nano),
+		ExecutionTimeoutSeconds: int(envoyCommandExecutionTimeout / time.Second),
 	}
 	pending := pendingCommand{clusterID: clusterID, result: make(chan domain.AgentCommandResult, 1)}
 
@@ -227,7 +229,13 @@ func (s *Store) NextAgentCommand(ctx context.Context, clusterID string) (domain.
 	for {
 		select {
 		case command := <-queue:
-			if deadline, err := time.Parse(time.RFC3339Nano, command.Deadline); err == nil && time.Now().After(deadline) {
+			if deadline, err := time.Parse(time.RFC3339Nano, command.Deadline); err == nil && s.now().After(deadline) {
+				continue
+			}
+			s.mutex.RLock()
+			pending, exists := s.pendingCommands[command.ID]
+			s.mutex.RUnlock()
+			if !exists || pending.clusterID != clusterID {
 				continue
 			}
 			return command, true, nil
