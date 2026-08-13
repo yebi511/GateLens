@@ -94,11 +94,11 @@ API 与 Web 使用独立镜像：
 
 ```bash
 make image \
-  API_IMAGE=registry.example.com/platform/gatelens-api:v0.1.0 \
-  WEB_IMAGE=registry.example.com/platform/gatelens-web:v0.1.0
+  API_IMAGE=registry.example.com/platform/gatelens-api:v0.2.0 \
+  WEB_IMAGE=registry.example.com/platform/gatelens-web:v0.2.0
 make image-push \
-  API_IMAGE=registry.example.com/platform/gatelens-api:v0.1.0 \
-  WEB_IMAGE=registry.example.com/platform/gatelens-web:v0.1.0
+  API_IMAGE=registry.example.com/platform/gatelens-api:v0.2.0 \
+  WEB_IMAGE=registry.example.com/platform/gatelens-web:v0.2.0
 ```
 
 网络受限环境可通过 `GOPROXY` 覆盖 API 镜像的 Go 模块代理。
@@ -160,8 +160,8 @@ kubectl create namespace gatelens-system --dry-run=client -o yaml | kubectl appl
 kubectl -n gatelens-system create secret generic gatelens-agent-auth \
   --from-literal=token="$GATELENS_AGENT_TOKEN" --dry-run=client -o yaml | kubectl apply -f -
 make deploy \
-  API_IMAGE=registry.example.com/platform/gatelens-api:v0.1.0 \
-  WEB_IMAGE=registry.example.com/platform/gatelens-web:v0.1.0
+  API_IMAGE=registry.example.com/platform/gatelens-api:v0.2.0 \
+  WEB_IMAGE=registry.example.com/platform/gatelens-web:v0.2.0
 kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 ```
 
