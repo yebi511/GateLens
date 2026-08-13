@@ -18,6 +18,7 @@ import {
 } from '@lucide/vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import type { GateLensContext, Topology, TopologyCluster, TopologyEdge, TopologyNode, ViewID } from '../types'
+import { formatCSTDateTime } from '../utils/dateTime'
 
 const props = defineProps<{
   context: GateLensContext
@@ -491,7 +492,7 @@ onBeforeUnmount(() => {
       <div class="federated-cluster-summary">
         <span>当前集群</span>
         <strong>{{ activeCluster.name }}</strong>
-        <small>{{ activeCluster.snapshot.observedAt }} / {{ stateLabel }}</small>
+        <small>{{ formatCSTDateTime(activeCluster.snapshot.observedAt) }} / {{ stateLabel }}</small>
       </div>
       <div class="federated-snapshot">
         <span>联邦快照</span>

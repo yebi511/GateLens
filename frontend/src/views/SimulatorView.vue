@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { Check, CircleHelp, LoaderCircle, Route, XCircle } from '@lucide/vue'
 import { api } from '../api/client'
 import type { GateLensContext, RouteExplanation, Topology } from '../types'
+import { formatCSTDateTime } from '../utils/dateTime'
 
 const props = defineProps<{ context: GateLensContext; topology: Topology; clusterId: string }>()
 const emit = defineEmits<{ locate: [targetID: string]; error: [message: string] }>()
@@ -79,7 +80,7 @@ function stepIcon(state: string) {
 
     <div class="simulator-layout">
       <form class="request-form" @submit.prevent="submit" @reset.prevent="reset">
-        <div class="panel-title"><h2>请求输入</h2><span>快照 {{ cluster?.snapshot.observedAt ?? context.snapshot.observedAt }}</span></div>
+        <div class="panel-title"><h2>请求输入</h2><span>快照 {{ formatCSTDateTime(cluster?.snapshot.observedAt ?? context.snapshot.observedAt) }}</span></div>
         <label>Gateway
           <select v-model="form.gateway" required>
             <option v-for="gateway in gateways" :key="gateway.id" :value="gateway.id">{{ gateway.namespace }}/{{ gateway.name }}</option>
@@ -110,7 +111,7 @@ function stepIcon(state: string) {
         <div v-if="loading" class="empty-detail large"><LoaderCircle :size="28" class="spin" /><h2>正在解析请求</h2><p>结果将固定绑定当前快照。</p></div>
         <template v-else-if="result">
           <div class="result-header">
-            <div><h2>{{ result.summary }}</h2><p>{{ result.observedAt }} · 置信度 {{ result.confidence }} · 按快照推断</p></div>
+            <div><h2>{{ result.summary }}</h2><p>{{ formatCSTDateTime(result.observedAt) }} · 置信度 {{ result.confidence }} · 按快照推断</p></div>
             <span class="outcome" :class="result.outcome.toLowerCase()">{{ result.outcome }}</span>
           </div>
           <div class="step-list">

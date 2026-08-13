@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { CheckCircle2, Menu, RefreshCw } from '@lucide/vue'
 import type { TopologyCluster } from '../types'
+import { formatCSTDateTime } from '../utils/dateTime'
 
 const props = defineProps<{
   clusters: TopologyCluster[]
@@ -37,7 +38,7 @@ const cluster = computed(() => props.clusters.find((item) => item.id === props.s
     <label>
       <span>快照</span>
       <select :disabled="!cluster">
-        <option>{{ cluster?.snapshot.observedAt ?? '等待快照' }}</option>
+        <option>{{ cluster ? formatCSTDateTime(cluster.snapshot.observedAt) : '等待快照' }}</option>
       </select>
     </label>
     <div class="context-spacer" />

@@ -14,6 +14,7 @@ import {
 } from '@lucide/vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import type { GateLensContext, Topology, TopologyNode, ViewID } from '../types'
+import { formatCSTDateTime } from '../utils/dateTime'
 
 const props = defineProps<{
   context: GateLensContext
@@ -88,7 +89,7 @@ function selectNode(node: TopologyNode) {
       <div>
         <p class="eyebrow">有效流量图</p>
         <h1>单集群多命名空间拓扑</h1>
-        <p>来自快照 {{ context.snapshot.observedAt }}，覆盖 {{ context.namespaces.length }} 个命名空间。</p>
+        <p>来自快照 {{ formatCSTDateTime(context.snapshot.observedAt) }}，覆盖 {{ context.namespaces.length }} 个命名空间。</p>
       </div>
       <button class="primary-button" type="button" @click="emit('navigate', 'simulator')">模拟请求</button>
     </div>

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { ExternalLink, Search } from '@lucide/vue'
 import type { Resource } from '../types'
+import { formatCSTDateTime } from '../utils/dateTime'
 
 const props = defineProps<{ resources: Resource[] }>()
 const emit = defineEmits<{ locate: [targetID: string] }>()
@@ -25,7 +26,7 @@ const visible = computed(() => {
           <tr v-for="resource in visible" :key="resource.id">
             <td><code>{{ resource.kind }}</code></td><td><strong>{{ resource.name }}</strong></td><td>{{ resource.namespace || '—' }}</td>
             <td><span class="resource-status" :class="`text-${resource.status}`"><i class="status-dot" :class="resource.status" />{{ resource.statusText }}</span></td>
-            <td>{{ resource.updatedAt }}</td><td>{{ resource.findings || '—' }}</td>
+            <td>{{ formatCSTDateTime(resource.updatedAt) }}</td><td>{{ resource.findings || '—' }}</td>
             <td><button class="icon-button table-icon" type="button" title="在拓扑中查看" @click="emit('locate', resource.id)"><ExternalLink :size="16" /></button></td>
           </tr>
           <tr v-if="!visible.length"><td colspan="7"><div class="table-empty">没有匹配的资源。</div></td></tr>

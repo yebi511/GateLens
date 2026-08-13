@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { ArrowLeft, LocateFixed, ShieldCheck } from '@lucide/vue'
 import type { Finding, GateLensContext, ViewID } from '../types'
+import { formatCSTDateTime } from '../utils/dateTime'
 
 const props = defineProps<{ context: GateLensContext; findings: Finding[] }>()
 const emit = defineEmits<{ navigate: [view: ViewID]; locate: [targetID: string] }>()
@@ -12,7 +13,7 @@ const warnings = computed(() => props.findings.filter((finding) => finding.sever
 <template>
   <section class="view">
     <div class="page-header">
-      <div><p class="eyebrow">静态解析检查</p><h1>配置健康</h1><p>快照 {{ context.snapshot.observedAt }} 发现 {{ findings.length }} 个问题。</p></div>
+      <div><p class="eyebrow">静态解析检查</p><h1>配置健康</h1><p>快照 {{ formatCSTDateTime(context.snapshot.observedAt) }} 发现 {{ findings.length }} 个问题。</p></div>
       <button class="secondary-button" type="button" @click="emit('navigate', 'topology')"><ArrowLeft :size="15" />返回拓扑</button>
     </div>
     <div class="finding-summary">

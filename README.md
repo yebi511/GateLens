@@ -226,7 +226,7 @@ deploy/              API/Web Kubernetes 部署清单
 docs/                产品、架构和 ADR 文档
 ```
 
-详细说明见[代码目录结构](docs/08-code-structure.md)。
+详细说明见[代码目录结构](docs/08-code-structure.md)。主动发送受控请求并通过 Envoy、Trace 和网络流还原实际路径的后续方案，见[主动探测与实际流量路径观测设计](docs/10-observed-traffic-path.md)。
 
 ## 开发与贡献
 
