@@ -7,11 +7,11 @@ import ContextBar from './components/ContextBar.vue'
 import EnvoyView from './views/EnvoyView.vue'
 import HealthView from './views/HealthView.vue'
 import ResourcesView from './views/ResourcesView.vue'
-import SimulatorView from './views/SimulatorView.vue'
+import ProbeView from './views/ProbeView.vue'
 import FederatedTopologyView from './views/FederatedTopologyView.vue'
 import type { Finding, GateLensContext, Resource, Topology, TopologyCluster, ViewID } from './types'
 
-const validViews = new Set<ViewID>(['topology', 'envoy', 'simulator', 'health', 'resources'])
+const validViews = new Set<ViewID>(['topology', 'envoy', 'probe', 'health', 'resources'])
 const currentView = ref<ViewID>(viewFromHash())
 const context = ref<GateLensContext | null>(null)
 const topology = ref<Topology | null>(null)
@@ -41,7 +41,8 @@ const clusters = computed<TopologyCluster[]>(() => {
 const activeCluster = computed(() => clusters.value.find((cluster) => cluster.id === clusterID.value) ?? clusters.value[0] ?? null)
 
 function viewFromHash(): ViewID {
-  const candidate = window.location.hash.slice(1) as ViewID
+	const raw = window.location.hash.slice(1)
+	const candidate = (raw === 'simulator' ? 'probe' : raw) as ViewID
   return validViews.has(candidate) ? candidate : 'topology'
 }
 function navigate(view: ViewID) {
@@ -116,7 +117,7 @@ onBeforeUnmount(() => {
       <template v-else-if="context && topology">
         <FederatedTopologyView v-if="currentView === 'topology'" :context="context" :topology="topology" :cluster-id="clusterID" :namespace="namespace" :focus-node-id="focusNodeId" @navigate="navigate" @open-envoy="openEnvoy" />
         <EnvoyView v-else-if="currentView === 'envoy'" :topology="topology" :cluster-id="clusterID" :initial-gateway-id="envoyGatewayID" @error="showError" />
-        <SimulatorView v-else-if="currentView === 'simulator'" :context="context" :topology="topology" :cluster-id="clusterID" @locate="locate" @error="showError" />
+        <ProbeView v-else-if="currentView === 'probe'" :topology="topology" :cluster-id="clusterID" @error="showError" />
         <HealthView v-else-if="currentView === 'health'" :context="context" :findings="findings" @navigate="navigate" @locate="locate" />
         <ResourcesView v-else :resources="resources" @locate="locate" />
       </template>

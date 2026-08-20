@@ -3,9 +3,9 @@ import type {
   Finding,
   GateLensContext,
   Resource,
-  RouteExplanation,
-  RouteExplanationRequest,
   Topology,
+  ProbeExecution,
+  ProbeRequest,
 } from '../types'
 
 const baseURL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
@@ -35,6 +35,7 @@ async function getTopology(): Promise<Topology> {
   const value = await request<Topology>('/api/v1/topology')
   value.nodes ??= []
   value.edges ??= []
+  value.probeEntries ??= []
   for (const node of value.nodes) node.conditions ??= []
   value.clusters ??= []
   for (const cluster of value.clusters) cluster.namespaces ??= []
@@ -60,13 +61,19 @@ async function getEnvoy(gatewayID: string): Promise<EnvoyConfig> {
   }
   return value
 }
-async function explain(payload: RouteExplanationRequest): Promise<RouteExplanation> {
-  const value = await request<RouteExplanation>('/api/v1/route-explanations', {
+async function createProbe(payload: ProbeRequest): Promise<ProbeExecution> {
+  const value = await request<ProbeExecution>('/api/v1/probes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  value.steps ??= []
+  value.hops ??= []
+  value.segments ??= []
+  for (const segment of value.segments) {
+    segment.hops ??= []
+    segment.gaps ??= []
+  }
+  value.gaps ??= []
   return value
 }
 
@@ -76,5 +83,5 @@ export const api = {
   findings: async () => (await request<Finding[] | null>('/api/v1/health/findings')) ?? [],
   resources: async () => (await request<Resource[] | null>('/api/v1/resources')) ?? [],
   envoy: getEnvoy,
-  explain,
+  createProbe,
 }

@@ -18,15 +18,17 @@ import (
 )
 
 type Config struct {
-	Address        string
-	Mode           string
-	ClusterID      string
-	AllowedOrigins []string
-	AgentServerURL string
-	AgentToken     string
-	ClusterName    string
-	AgentInterval  time.Duration
-	StaleAfter     time.Duration
+	Address            string
+	Mode               string
+	ClusterID          string
+	AllowedOrigins     []string
+	AgentServerURL     string
+	AgentToken         string
+	ClusterName        string
+	AgentInterval      time.Duration
+	StaleAfter         time.Duration
+	ProbeLogFile       string
+	EnableActiveProbes bool
 }
 
 func ConfigFromEnv() Config {
@@ -48,7 +50,7 @@ func ConfigFromEnv() Config {
 	agentInterval := durationFromEnv("GATELENS_AGENT_INTERVAL", 30*time.Second)
 	staleAfter := durationFromEnv("GATELENS_STALE_AFTER", 2*time.Minute)
 	allowedOrigins := splitCommaSeparated(os.Getenv("GATELENS_ALLOWED_ORIGINS"))
-	return Config{Address: address, Mode: mode, ClusterID: clusterID, ClusterName: clusterName, AgentServerURL: agentServerURL, AgentToken: agentToken, AgentInterval: agentInterval, StaleAfter: staleAfter, AllowedOrigins: allowedOrigins}
+	return Config{Address: address, Mode: mode, ClusterID: clusterID, ClusterName: clusterName, AgentServerURL: agentServerURL, AgentToken: agentToken, AgentInterval: agentInterval, StaleAfter: staleAfter, AllowedOrigins: allowedOrigins, ProbeLogFile: strings.TrimSpace(os.Getenv("GATELENS_PROBE_LOG_FILE")), EnableActiveProbes: booleanFromEnv("GATELENS_ENABLE_ACTIVE_PROBES")}
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -66,6 +68,7 @@ func Run(ctx context.Context, config Config) error {
 		if err != nil {
 			return err
 		}
+		store.SetProbeLogFile(config.ProbeLogFile)
 		runner, err := agent.New(store, agent.Config{ServerURL: config.AgentServerURL, Token: config.AgentToken, ClusterID: config.ClusterID, ClusterName: config.ClusterName, Interval: config.AgentInterval})
 		if err != nil {
 			return err
@@ -89,6 +92,9 @@ func Run(ctx context.Context, config Config) error {
 	if commandBroker != nil {
 		handlerOptions = append(handlerOptions, api.WithAgentCommandBroker(commandBroker, config.AgentToken))
 	}
+	if probes, ok := reader.(source.ProbeStore); ok && config.EnableActiveProbes {
+		handlerOptions = append(handlerOptions, api.WithProbeStore(probes))
+	}
 	server := &http.Server{Addr: config.Address, Handler: api.NewHandler(reader, handlerOptions...), ReadHeaderTimeout: 5 * time.Second}
 	errorsCh := make(chan error, 1)
 	go func() { errorsCh <- server.ListenAndServe() }()
@@ -103,6 +109,15 @@ func Run(ctx context.Context, config Config) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return server.Shutdown(shutdownCtx)
+	}
+}
+
+func booleanFromEnv(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

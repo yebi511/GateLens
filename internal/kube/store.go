@@ -37,20 +37,20 @@ type Store struct {
 	snapshot     snapshot
 	restConfig   *rest.Config
 	envoyCache   map[string]cachedEnvoyConfig
+	probeLogFile string
 }
+
+func (s *Store) SetProbeLogFile(path string) {
+	s.probeLogFile = strings.TrimSpace(path)
+}
+
 type snapshot struct {
-	context   domain.Context
-	topology  domain.Topology
-	findings  []domain.Finding
-	resources []domain.Resource
-	routes    []routeRule
-	runtimes  map[string]gatewayRuntime
-}
-type routeRule struct {
-	routeID, namespace     string
-	hostnames              []string
-	method, pathType, path string
-	backendIDs             []string
+	context      domain.Context
+	topology     domain.Topology
+	findings     []domain.Finding
+	resources    []domain.Resource
+	runtimes     map[string]gatewayRuntime
+	probeEntries map[string]domain.ProbeEntry
 }
 
 func NewInCluster(clusterID string) (*Store, error) {
@@ -179,47 +179,6 @@ func (s *Store) Resources(query string) []domain.Resource {
 	return filterResources(s.snapshot.resources, query)
 }
 
-func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExplanation {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	result := domain.RouteExplanation{SnapshotID: s.snapshot.topology.SnapshotID, ObservedAt: s.snapshot.topology.ObservedAt, Confidence: "medium", Outcome: "Indeterminate", Summary: "没有找到匹配的 HTTPRoute。"}
-	nodes := map[string]domain.TopologyNode{}
-	for _, n := range s.snapshot.topology.Nodes {
-		nodes[n.ID] = n
-	}
-	for _, rule := range s.snapshot.routes {
-		if request.Namespace != "" && request.Namespace != rule.namespace {
-			continue
-		}
-		if !hostMatches(request.Host, rule.hostnames) || !methodMatches(request.Method, rule.method) || !pathMatches(request.Path, rule.pathType, rule.path) {
-			continue
-		}
-		result.Steps = []domain.ExplainStep{{Hop: 1, Title: "Route 规则匹配", Detail: "命中 " + rule.namespace + "/" + nodes[rule.routeID].Name + "。", State: "passed", TargetID: rule.routeID}}
-		if len(rule.backendIDs) == 0 {
-			result.Outcome = "Unresolved"
-			result.Summary = "路由没有可解析的后端。"
-			return result
-		}
-		for _, id := range rule.backendIDs {
-			backend := nodes[id]
-			state := "passed"
-			if backend.Status == domain.StatusError {
-				state = "rejected"
-			}
-			result.Steps = append(result.Steps, domain.ExplainStep{Hop: 1, Title: "后端解析", Detail: backend.Summary, State: state, TargetID: id})
-			if backend.Status == domain.StatusHealthy {
-				result.Outcome = "Routed"
-				result.Summary = "已解析到健康后端候选。"
-				return result
-			}
-		}
-		result.Outcome = "NoHealthyBackend"
-		result.Summary = "匹配路由的后端均不可用。"
-		return result
-	}
-	return result
-}
-
 func (s *Store) rebuild(stores ...cache.Store) {
 	serviceStore, endpointStore, namespaceStore, gatewayStore, routeStore, grantStore := stores[0], stores[1], stores[2], stores[3], stores[4], stores[5]
 	var ingressStore, mcpBridgeStore, gatewayClassStore, deploymentStore, podStore, ingressClassStore, inferencePoolStore cache.Store
@@ -245,7 +204,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		inferencePoolStore = stores[12]
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	snap := snapshot{runtimes: map[string]gatewayRuntime{}, context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: append([]string(nil), s.capabilities...)}}
+	snap := snapshot{runtimes: map[string]gatewayRuntime{}, probeEntries: map[string]domain.ProbeEntry{}, context: domain.Context{Cluster: domain.Cluster{ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes"}, Snapshot: domain.Snapshot{ID: "live-" + now, ObservedAt: now, State: "complete"}, Capabilities: append([]string(nil), s.capabilities...)}}
 	for _, item := range namespaceStore.List() {
 		if ns, ok := item.(*corev1.Namespace); ok {
 			snap.context.Namespaces = append(snap.context.Namespaces, ns.Name)
@@ -302,6 +261,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 	}
 	if deploymentStore != nil && podStore != nil {
 		addStandaloneGatewayRuntimes(&snap, deploymentStore, podStore)
+		discoverGatewayProbeEntries(&snap, services, endpointsByService)
 	}
 	for _, item := range routeStore.List() {
 		obj, ok := item.(*unstructured.Unstructured)
@@ -335,23 +295,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 			if podStore != nil {
 				podItems = podStore.List()
 			}
-			backendIDs := s.addBackends(&snap, obj, routeID, rule, services, inferencePools, ready, endpointsByService, podItems, grants)
-			matches, _ := rule["matches"].([]any)
-			if len(matches) == 0 {
-				snap.routes = append(snap.routes, routeRule{routeID: routeID, namespace: obj.GetNamespace(), hostnames: hostnames, pathType: "PathPrefix", path: "/", backendIDs: backendIDs})
-			}
-			for _, rawMatch := range matches {
-				match, _ := rawMatch.(map[string]any)
-				normalized := routeRule{routeID: routeID, namespace: obj.GetNamespace(), hostnames: hostnames, pathType: "PathPrefix", path: "/", backendIDs: backendIDs}
-				if method, ok := match["method"].(string); ok {
-					normalized.method = method
-				}
-				if path, ok := match["path"].(map[string]any); ok {
-					normalized.pathType = stringValue(path, "type", "PathPrefix")
-					normalized.path = stringValue(path, "value", "/")
-				}
-				snap.routes = append(snap.routes, normalized)
-			}
+			s.addBackends(&snap, obj, routeID, rule, services, inferencePools, ready, endpointsByService, podItems, grants)
 		}
 	}
 	if ingressStore != nil {
@@ -659,33 +603,4 @@ func filterResources(resources []domain.Resource, query string) []domain.Resourc
 		}
 	}
 	return result
-}
-func hostMatches(host string, patterns []string) bool {
-	if len(patterns) == 0 {
-		return true
-	}
-	host = strings.ToLower(strings.Split(host, ":")[0])
-	for _, pattern := range patterns {
-		p := strings.ToLower(pattern)
-		if p == host {
-			return true
-		}
-		if strings.HasPrefix(p, "*.") && strings.HasSuffix(host, p[1:]) && host != p[2:] {
-			return true
-		}
-	}
-	return false
-}
-func methodMatches(actual, expected string) bool {
-	return expected == "" || strings.EqualFold(actual, expected)
-}
-func pathMatches(actual, pathType, expected string) bool {
-	switch pathType {
-	case "Exact":
-		return actual == expected
-	case "RegularExpression":
-		return false
-	default:
-		return strings.HasPrefix(actual, expected)
-	}
 }

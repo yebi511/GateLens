@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Activity, Boxes, Network, Route, ShieldAlert, Waypoints, X } from '@lucide/vue'
+import { Activity, Boxes, Network, RadioTower, ShieldAlert, Waypoints, X } from '@lucide/vue'
 import type { TopologyCluster, ViewID } from '../types'
 
 const props = defineProps<{
@@ -13,7 +13,7 @@ const emit = defineEmits<{ navigate: [view: ViewID]; close: [] }>()
 const items = [
   { id: 'topology' as const, label: '拓扑', icon: Network },
   { id: 'envoy' as const, label: 'Envoy 配置', icon: Waypoints },
-  { id: 'simulator' as const, label: '请求模拟', icon: Route },
+  { id: 'probe' as const, label: '实时探测', icon: RadioTower },
   { id: 'health' as const, label: '配置健康', icon: ShieldAlert },
   { id: 'resources' as const, label: '资源', icon: Boxes },
 ]

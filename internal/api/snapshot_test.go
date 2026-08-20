@@ -165,3 +165,53 @@ func TestFederatedEnvoyQueryCompletesThroughAgentEndpoints(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 }
+
+func TestFederatedProbeCompletesThroughAgentEndpoints(t *testing.T) {
+	store := federation.NewStore("federation", time.Minute)
+	snapshot := domain.AgentSnapshot{
+		Cluster: domain.TopologyCluster{ID: "edge", Name: "edge"},
+		Context: domain.Context{Cluster: domain.Cluster{ID: "edge", Name: "edge"}},
+		Topology: domain.Topology{SnapshotID: "edge-1", Nodes: []domain.TopologyNode{{
+			ID: "gateway/higress-system/higress", Kind: "Gateway", ClusterID: "edge",
+		}}, ProbeEntries: []domain.ProbeEntry{{ID: "gateway/higress-system/higress/probe-entry/higress-system/higress-gateway/80", GatewayID: "gateway/higress-system/higress", ClusterID: "edge", Namespace: "higress-system", ServiceName: "higress-gateway", DNSName: "higress-gateway.higress-system.svc.cluster.local", Port: 80, Scheme: "http", Protocol: "http"}}},
+	}
+	if err := store.ReceiveSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(store, WithSnapshotReceiver(store, "shared-token"), WithAgentCommandBroker(store, "shared-token"), WithProbeStore(store))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	browserDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		body := `{"sourceCluster":"edge","gatewayID":"edge::gateway/higress-system/higress","entryID":"edge::gateway/higress-system/higress/probe-entry/higress-system/higress-gateway/80","method":"POST","path":"/v1/chat","body":"{}"}`
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/probes", bytes.NewBufferString(body)).WithContext(ctx)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		browserDone <- response
+	}()
+	nextRequest := httptest.NewRequest(http.MethodGet, "/api/v1/agent/commands/next?clusterID=edge", nil).WithContext(ctx)
+	nextRequest.Header.Set("Authorization", "Bearer shared-token")
+	nextResponse := httptest.NewRecorder()
+	handler.ServeHTTP(nextResponse, nextRequest)
+	var command domain.AgentCommand
+	if nextResponse.Code != http.StatusOK || json.NewDecoder(nextResponse.Body).Decode(&command) != nil || command.Kind != domain.AgentCommandProbeHTTP || command.Probe == nil {
+		t.Fatalf("next status=%d command=%#v body=%s", nextResponse.Code, command, nextResponse.Body.String())
+	}
+	probe := domain.ProbeExecution{ID: command.Probe.ProbeID, TraceID: command.Probe.TraceID, SourceCluster: "edge", State: "completed", Hops: []domain.ObservedHop{{RouteName: "chat", UpstreamHost: "10.0.0.8:8000", Confidence: "observed"}}, EvidenceComplete: true}
+	resultBody, _ := json.Marshal(domain.AgentCommandResult{CommandID: command.ID, ClusterID: "edge", Probe: &probe})
+	resultRequest := httptest.NewRequest(http.MethodPost, "/api/v1/agent/command-results", bytes.NewReader(resultBody)).WithContext(ctx)
+	resultRequest.Header.Set("Authorization", "Bearer shared-token")
+	resultResponse := httptest.NewRecorder()
+	handler.ServeHTTP(resultResponse, resultRequest)
+	if resultResponse.Code != http.StatusAccepted {
+		t.Fatalf("result status=%d body=%s", resultResponse.Code, resultResponse.Body.String())
+	}
+	response := <-browserDone
+	if response.Code != http.StatusCreated {
+		t.Fatalf("probe status=%d body=%s", response.Code, response.Body.String())
+	}
+	var returned domain.ProbeExecution
+	if err := json.NewDecoder(response.Body).Decode(&returned); err != nil || len(returned.Hops) != 1 || returned.Hops[0].RouteName != "chat" {
+		t.Fatalf("returned=%#v err=%v", returned, err)
+	}
+}

@@ -1,6 +1,6 @@
 # ADR 0004：前端 MVP 聚焦静态配置解释
 
-- 状态：Accepted
+- 状态：Superseded by ADR 0010
 - 日期：2026-07-24
 
 ## 背景

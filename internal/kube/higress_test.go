@@ -71,10 +71,6 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	if !hasEdge(store.Topology(), "mcpbridge/higress-system/github-bridge/registry/github", "mcpbridge/higress-system/github-bridge/registry/github/target", "resolves") {
 		t.Fatalf("expected Registry domain to resolve to an external target: %#v", store.Topology().Edges)
 	}
-	result := store.Explain(domain.RouteExplanationRequest{Host: "mcp.example.com", Path: "/v1/tools", Method: "GET", Namespace: "higress-system"})
-	if result.Outcome != "Routed" {
-		t.Fatalf("outcome=%s, want Routed: %#v", result.Outcome, result)
-	}
 }
 
 func TestHigressIngressSelectsSoleMcpBridgeRegistryWithoutDestination(t *testing.T) {

@@ -63,23 +63,6 @@ func (s *Store) Resources(query string) []domain.Resource {
 	return result
 }
 
-func (s *Store) Explain(request domain.RouteExplanationRequest) domain.RouteExplanation {
-	base := domain.RouteExplanation{SnapshotID: s.context.Snapshot.ID, ObservedAt: s.context.Snapshot.ObservedAt, Confidence: "medium"}
-	if request.Host != "api.ai.example.com" {
-		base.Outcome, base.Summary = "Rejected", "没有匹配当前 Host 的 Listener。"
-		base.Steps = []domain.ExplainStep{{Hop: 1, Title: "Listener 候选", Detail: "https-api 仅匹配 api.ai.example.com。", State: "rejected", TargetID: "listener-https"}}
-		return base
-	}
-	if strings.Contains(request.Path, "embeddings") {
-		base.Outcome, base.Summary = "NoHealthyBackend", "已命中 embeddings-v1，但后端没有 Ready Endpoint。"
-		base.Steps = []domain.ExplainStep{{Hop: 1, Title: "Listener 候选", Detail: "命中 https-api。", State: "passed", TargetID: "listener-https"}, {Hop: 1, Title: "Route 规则匹配", Detail: "命中 inference/embeddings-v1。", State: "passed", TargetID: "route-embeddings"}, {Hop: 1, Title: "后端解析", Detail: "inference/embedding-backend 的 ReadyEndpoints=0。", State: "rejected", TargetID: "service-embedding"}}
-		return base
-	}
-	base.Outcome, base.Summary = "Routed", "请求将进入 qwen-production 的健康候选集。"
-	base.Steps = []domain.ExplainStep{{Hop: 1, Title: "Listener 候选", Detail: "命中 https-api：Host 与 Listener hostname 一致。", State: "passed", TargetID: "listener-https"}, {Hop: 1, Title: "Route 规则匹配", Detail: "命中 inference/chat-completions：POST /v1/chat/completions。", State: "passed", TargetID: "route-chat"}, {Hop: 1, Title: "推理后端解析", Detail: "qwen-production 有 2 个 Ready Endpoint；实时负载不可见。", State: "unknown", TargetID: "pool-qwen"}}
-	return base
-}
-
 func demoClusters(edgeSnapshot domain.Snapshot) []domain.TopologyCluster {
 	gpuSnapshot := domain.Snapshot{ID: "snapshot-gpu-prod-20260724-104246", ObservedAt: "2026-07-24T10:42:46+08:00", State: "complete"}
 	return []domain.TopologyCluster{

@@ -20,6 +20,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods/portforward"]
     verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch"]
@@ -73,6 +76,9 @@ spec:
           env:
             - {name: GATELENS_ADDR, value: ":8080"}
             - {name: GATELENS_MODE, value: "server"}
+            # Active probes send real requests. Protect the Web/API with authentication
+            # and authorization before exposing this Service outside the cluster.
+            - {name: GATELENS_ENABLE_ACTIVE_PROBES, value: "true"}
             - {name: GATELENS_CLUSTER_ID, value: "edge-prod"}
             - name: GATELENS_AGENT_TOKEN
               valueFrom:
@@ -111,6 +117,9 @@ spec:
             - {name: GATELENS_CLUSTER_NAME, value: "Gateway Production"}
             - {name: GATELENS_SERVER_URL, value: "http://gatelens-api:8080"}
             - {name: GATELENS_AGENT_INTERVAL, value: "30s"}
+            # Probe targets are discovered from Services that select Ready Gateway Pods.
+            # Optional only when the same log file is mounted into this Pod.
+            # - {name: GATELENS_PROBE_LOG_FILE, value: "/var/log/higress/access.log"}
             - name: GATELENS_AGENT_TOKEN
               valueFrom:
                 secretKeyRef: {name: gatelens-agent-auth, key: token}

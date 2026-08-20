@@ -91,7 +91,7 @@ function selectNode(node: TopologyNode) {
         <h1>单集群多命名空间拓扑</h1>
         <p>来自快照 {{ formatCSTDateTime(context.snapshot.observedAt) }}，覆盖 {{ context.namespaces.length }} 个命名空间。</p>
       </div>
-      <button class="primary-button" type="button" @click="emit('navigate', 'simulator')">模拟请求</button>
+      <button class="primary-button" type="button" @click="emit('navigate', 'probe')">实时探测</button>
     </div>
 
     <div class="filter-bar">

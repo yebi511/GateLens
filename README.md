@@ -21,13 +21,13 @@ GateLens 以只读方式监听 Kubernetes 资源，构建带来源证据的有�
 - 监听 `IngressClass=higress` 及 Higress `McpBridge` 与 registry 配置。
 - 展示 Gateway、Listener、HTTPRoute/Ingress、Service/InferencePool/McpBridge 与 Endpoint/Pod/Registry 的跨命名空间拓扑。
 - 校验 ParentRef、BackendRef、ReferenceGrant 和 Ready Endpoint。
-- 根据 Host、Path 与 Method 对请求进行静态解释。
 - 提供资源搜索、配置健康清单和快照上下文。
 - 自动定位网关的 Ready Pod；联邦模式由归属集群 Agent 主动领取查询，并通过临时 port-forward 读取 Envoy `/config_dump`。
 - 聚合 Wasm、`ext_proc` 和其他 Envoy Filter 的运行时挂载点，并关联 ECDS、Wasm 模块和上游 Cluster。
-- 使用最小只读 RBAC，不修改集群资源，也不代理业务请求。
+- 从实时探测页选择自动发现的网关 Service 入口，由指定 Agent 发出一次真实 HTTP 请求，并按联邦拓扑向各集群 Agent 只读采集同一 GateLens probe ID 或 trace ID 的网关日志，分段展示实际 Route、upstream cluster 和 upstream host。
+- 使用最小 RBAC，不修改集群资源；主动探测会产生真实业务请求，Server 默认关闭。入口必须是 selector 命中 Ready Gateway Pod 且明确声明 HTTP/HTTPS 协议的 Kubernetes Service。
 
-当前尚未实现 Higress/Istio 专有 CRD 的完整语义、Trace/日志关联和实际流量确认。跨集群边来自出站目标与远端入口配置的唯一精确匹配；请求模拟属于**按快照推断**，不等同于真实请求已经经过该路径。
+当前尚未实现 Higress/Istio 专有 CRD 的完整语义、基于 Span 父子关系的分布式 Trace 和 eBPF 网络验证。实时探测可按同一 `x-gatelens-probe-id` 或 trace ID 关联多个已接入 Gateway 的访问日志；跨网关边本身仍来自配置唯一匹配，缺少任一网关日志时会明确标记为推断或证据缺口。GateLens 不再根据配置快照预测请求最终 Route/upstream，因为 WasmPlugin 可在运行时改写路由输入并触发重新选路。各 Gateway 必须在 JSON access log 中显式输出 `gatelens_probe_id`，具体格式见[主动探测文档](docs/10-observed-traffic-path.md#02-日志格式要求)。
 
 ## 架构
 
@@ -186,6 +186,8 @@ kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 | `GATELENS_AGENT_TOKEN` | 空 | Server 接收快照和 Agent 上传时使用的共享 Bearer token |
 | `GATELENS_AGENT_INTERVAL` | `30s` | Agent 快照上报周期 |
 | `GATELENS_STALE_AFTER` | `2m` | Server 将未更新 Agent 标记为 stale 的阈值 |
+| `GATELENS_PROBE_LOG_FILE` | 空 | 可选的 Agent 本地访问日志文件；为空时通过 Kubernetes Pod 日志读取 Gateway stdout/stderr |
+| `GATELENS_ENABLE_ACTIVE_PROBES` | `false` | Server 是否开放主动探测 API；启用前应在 Web/API 前配置身份认证与授权 |
 
 ### Web
 
@@ -205,7 +207,8 @@ kubectl -n gatelens-system port-forward svc/gatelens 8080:80
 | `GET /api/v1/envoy/config?gatewayID=` | 指定 Gateway 的 Envoy 配置 |
 | `GET /api/v1/resources?q=` | 搜索当前快照资源 |
 | `GET /api/v1/health/findings` | 配置健康问题 |
-| `POST /api/v1/route-explanations` | 按快照解释请求匹配和后端状态 |
+| `POST /api/v1/probes` | 创建真实 HTTP 探测并等待 Higress 日志证据 |
+| `GET /api/v1/probes/{id}` | 查询 Server 内存中的探测结果 |
 | `POST /api/v1/agent/snapshots` | Agent 向中央 Server 上报集群快照 |
 | `GET /api/v1/agent/commands/next?clusterID=` | Agent 长轮询领取本集群运行时查询 |
 | `POST /api/v1/agent/command-results` | Agent 向中央 Server 回传运行时查询结果 |
@@ -226,7 +229,7 @@ deploy/              API/Web Kubernetes 部署清单
 docs/                产品、架构和 ADR 文档
 ```
 
-详细说明见[代码目录结构](docs/08-code-structure.md)。主动发送受控请求并通过 Envoy、Trace 和网络流还原实际路径的后续方案，见[主动探测与实际流量路径观测设计](docs/10-observed-traffic-path.md)。
+详细说明见[代码目录结构](docs/08-code-structure.md)。主动探测的日志源、部署和证据边界见[主动探测与实际流量路径观测设计](docs/10-observed-traffic-path.md)。
 
 ## 开发与贡献
 
@@ -236,7 +239,7 @@ docs/                产品、架构和 ADR 文档
 - `cd frontend && npm run typecheck && npm run build` 通过。
 - 新增网关语义具有匿名化测试样本。
 - 推断结果保留来源和快照信息。
-- 不采集 Authorization、Cookie、API Key、提示词或响应正文。
+- 不采集 Authorization、Cookie、提示词或响应正文；实时探测页面输入的 API Key 仅用于请求并以 Bearer 认证发送，不返回、不由 Server 持久化。默认探测后清空；用户可显式选择仅在当前浏览器标签页会话中保留。
 
 架构调整请新增 ADR，不要改写已经接受的历史决策。参见 [`docs/adr`](docs/adr/README.md)。
 

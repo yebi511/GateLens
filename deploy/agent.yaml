@@ -20,6 +20,9 @@ rules:
   - apiGroups: [""]
     resources: ["pods/portforward"]
     verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch"]
@@ -77,6 +80,10 @@ spec:
             - {name: GATELENS_CLUSTER_NAME, value: "GPU Production"}
             - {name: GATELENS_SERVER_URL, value: "https://gatelens.example.com"}
             - {name: GATELENS_AGENT_INTERVAL, value: "30s"}
+            # Probe targets are discovered from Services that select Ready Gateway Pods.
+            # Optional file source. Prefer Pod stdout/stderr; a regular file must
+            # be mounted into this container before setting this variable.
+            # - {name: GATELENS_PROBE_LOG_FILE, value: "/var/log/higress/access.log"}
             - name: GATELENS_AGENT_TOKEN
               valueFrom:
                 secretKeyRef: {name: gatelens-agent-auth, key: token}

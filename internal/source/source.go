@@ -14,7 +14,6 @@ type Reader interface {
 	EnvoyConfig(context.Context, string) (domain.EnvoyConfig, error)
 	Findings() []domain.Finding
 	Resources(query string) []domain.Resource
-	Explain(domain.RouteExplanationRequest) domain.RouteExplanation
 }
 
 type SnapshotReceiver interface {
@@ -24,4 +23,14 @@ type SnapshotReceiver interface {
 type AgentCommandBroker interface {
 	NextAgentCommand(context.Context, string) (domain.AgentCommand, bool, error)
 	CompleteAgentCommand(context.Context, domain.AgentCommandResult) error
+}
+
+type ProbeExecutor interface {
+	ExecuteProbe(context.Context, domain.ProbeCommand) (domain.ProbeExecution, error)
+	ObserveProbe(context.Context, domain.ProbeCommand) (domain.ProbeExecution, error)
+}
+
+type ProbeStore interface {
+	CreateProbe(context.Context, domain.ProbeRequest) (domain.ProbeExecution, error)
+	GetProbe(string) (domain.ProbeExecution, bool)
 }

@@ -38,10 +38,6 @@ func TestRebuildAcrossNamespaces(t *testing.T) {
 	if kinds["Listener"] != 1 || kinds["Endpoint"] != 1 {
 		t.Fatalf("topology kinds=%v", kinds)
 	}
-	result := store.Explain(domain.RouteExplanationRequest{Host: "api.example.com", Path: "/v1/chat/completions", Method: "POST", Namespace: "inference"})
-	if result.Outcome != "Routed" {
-		t.Fatalf("outcome=%s, want Routed: %#v", result.Outcome, result)
-	}
 }
 
 func TestHTTPRouteResolvesInferencePoolAndSelectedPods(t *testing.T) {

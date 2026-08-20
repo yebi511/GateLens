@@ -94,14 +94,12 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 				continue
 			}
 			for _, path := range rule.HTTP.Paths {
-				backendIDs := []string{}
 				if resource := path.Backend.Resource; resource != nil && resource.APIGroup != nil && *resource.APIGroup == "networking.higress.io" && resource.Kind == "McpBridge" {
 					bridgeKey := ingress.Namespace + "/" + resource.Name
 					bridgeID := bridgeIDs[bridgeKey]
 					if bridgeID == "" {
 						addFinding(snap, domain.StatusError, "McpBridge 不存在", ingress.Namespace+"/"+ingress.Name, "backend.resource="+resource.Name, ingressID)
 					} else {
-						backendIDs = append(backendIDs, bridgeID)
 						snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: ingressID, To: bridgeID, Relation: "routes"})
 						if destination := ingress.Annotations["higress.io/destination"]; destination != "" {
 							if registryID := registryIDForDestination(registryIDs[bridgeKey], destination); registryID != "" {
@@ -126,7 +124,6 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 							serviceNode.Summary = "Service 没有可用 Endpoint。"
 							addFinding(snap, domain.StatusError, "Ingress 后端没有可用 Endpoint", key, "ReadyEndpoints=0", ingressID)
 						}
-						backendIDs = append(backendIDs, serviceNode.ID)
 						snap.topology.Nodes = appendUnique(snap.topology.Nodes, serviceNode)
 						snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: ingressID, To: serviceNode.ID, Relation: "routes"})
 						appendServiceEndpoints(snap, serviceNode.ID, endpoints[key])
@@ -134,11 +131,6 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 						addFinding(snap, domain.StatusError, "Ingress 后端 Service 不存在", ingress.Namespace+"/"+ingress.Name, "backend.service="+key, ingressID)
 					}
 				}
-				pathType := "PathPrefix"
-				if path.PathType != nil && *path.PathType == networkingv1.PathTypeExact {
-					pathType = "Exact"
-				}
-				snap.routes = append(snap.routes, routeRule{routeID: ingressID, namespace: ingress.Namespace, hostnames: nonEmpty(rule.Host), pathType: pathType, path: defaultString(path.Path, "/"), backendIDs: backendIDs})
 			}
 		}
 	}
@@ -361,18 +353,4 @@ func annotationConditions(values map[string]string) []string {
 		}
 	}
 	return result
-}
-
-func nonEmpty(value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	return []string{value}
-}
-
-func defaultString(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
 }

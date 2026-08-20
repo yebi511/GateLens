@@ -16,6 +16,7 @@ type Handler struct {
 	allowedOrigins   map[string]struct{}
 	snapshotReceiver source.SnapshotReceiver
 	agentCommands    source.AgentCommandBroker
+	probes           source.ProbeStore
 	agentToken       string
 }
 
@@ -46,6 +47,10 @@ func WithAgentCommandBroker(broker source.AgentCommandBroker, token string) Opti
 	}
 }
 
+func WithProbeStore(store source.ProbeStore) Option {
+	return func(h *Handler) { h.probes = store }
+}
+
 func NewHandler(store source.Reader, options ...Option) http.Handler {
 	h := &Handler{store: store, allowedOrigins: make(map[string]struct{})}
 	for _, option := range options {
@@ -60,12 +65,45 @@ func NewHandler(store source.Reader, options ...Option) http.Handler {
 	mux.HandleFunc("GET /api/v1/envoy/config", h.envoyConfig)
 	mux.HandleFunc("GET /api/v1/resources", h.resources)
 	mux.HandleFunc("GET /api/v1/health/findings", h.findings)
-	mux.HandleFunc("POST /api/v1/route-explanations", h.explain)
+	mux.HandleFunc("POST /api/v1/probes", h.createProbe)
+	mux.HandleFunc("GET /api/v1/probes/{id}", h.getProbe)
 	mux.HandleFunc("/", h.notFound)
 	mux.HandleFunc("POST /api/v1/agent/snapshots", h.receiveSnapshot)
 	mux.HandleFunc("GET /api/v1/agent/commands/next", h.nextAgentCommand)
 	mux.HandleFunc("POST /api/v1/agent/command-results", h.completeAgentCommand)
 	return logging(cors(mux, h.allowedOrigins))
+}
+
+func (h *Handler) createProbe(w http.ResponseWriter, r *http.Request) {
+	if h.probes == nil {
+		writeError(w, http.StatusNotFound, "active probes are not enabled")
+		return
+	}
+	defer r.Body.Close()
+	var request domain.ProbeRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 128<<10)).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid probe request")
+		return
+	}
+	result, err := h.probes.CreateProbe(r.Context(), request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+func (h *Handler) getProbe(w http.ResponseWriter, r *http.Request) {
+	if h.probes == nil {
+		writeError(w, http.StatusNotFound, "active probes are not enabled")
+		return
+	}
+	result, ok := h.probes.GetProbe(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "probe not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) health(w http.ResponseWriter, _ *http.Request) {
@@ -101,19 +139,6 @@ func (h *Handler) resources(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) findings(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, h.store.Findings())
-}
-func (h *Handler) explain(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	var request domain.RouteExplanationRequest
-	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON request")
-		return
-	}
-	if request.Path == "" || request.Host == "" {
-		writeError(w, http.StatusBadRequest, "host and path are required")
-		return
-	}
-	writeJSON(w, http.StatusOK, h.store.Explain(request))
 }
 func (h *Handler) receiveSnapshot(w http.ResponseWriter, r *http.Request) {
 	if h.snapshotReceiver == nil {

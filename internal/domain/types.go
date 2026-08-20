@@ -37,7 +37,22 @@ type Topology struct {
 	Clusters            []TopologyCluster `json:"clusters,omitempty"`
 	Nodes               []TopologyNode    `json:"nodes"`
 	Edges               []TopologyEdge    `json:"edges"`
+	ProbeEntries        []ProbeEntry      `json:"probeEntries,omitempty"`
 	Truncated           bool              `json:"truncated"`
+}
+
+type ProbeEntry struct {
+	ID          string   `json:"id"`
+	GatewayID   string   `json:"gatewayID"`
+	ClusterID   string   `json:"clusterID"`
+	Namespace   string   `json:"namespace"`
+	ServiceName string   `json:"serviceName"`
+	DNSName     string   `json:"dnsName"`
+	Port        int32    `json:"port"`
+	Scheme      string   `json:"scheme"`
+	Protocol    string   `json:"protocol"`
+	DisplayName string   `json:"displayName"`
+	Addresses   []string `json:"addresses,omitempty"`
 }
 type TopologyCluster struct {
 	ID              string   `json:"id"`
@@ -192,34 +207,6 @@ type Resource struct {
 	Findings   int    `json:"findings"`
 }
 
-type RouteExplanationRequest struct {
-	SnapshotID string `json:"snapshotID"`
-	Gateway    string `json:"gateway"`
-	Listener   string `json:"listener"`
-	Method     string `json:"method"`
-	Host       string `json:"host"`
-	Path       string `json:"path"`
-	Namespace  string `json:"namespace"`
-	Model      string `json:"model"`
-}
-
-type RouteExplanation struct {
-	SnapshotID string        `json:"snapshotID"`
-	ObservedAt string        `json:"observedAt"`
-	Outcome    string        `json:"outcome"`
-	Confidence string        `json:"confidence"`
-	Summary    string        `json:"summary"`
-	Steps      []ExplainStep `json:"steps"`
-}
-
-type ExplainStep struct {
-	Hop      int    `json:"hop"`
-	Title    string `json:"title"`
-	Detail   string `json:"detail"`
-	State    string `json:"state"`
-	TargetID string `json:"targetID"`
-}
-
 type AgentSnapshot struct {
 	Cluster   TopologyCluster `json:"cluster"`
 	Context   Context         `json:"context"`
@@ -229,20 +216,119 @@ type AgentSnapshot struct {
 	SentAt    string          `json:"sentAt"`
 }
 
-const AgentCommandEnvoyConfig = "envoy-config"
+const (
+	AgentCommandEnvoyConfig  = "envoy-config"
+	AgentCommandProbeHTTP    = "probe-http"
+	AgentCommandProbeObserve = "probe-observe"
+)
+
+type ProbeRequest struct {
+	SourceCluster  string `json:"sourceCluster"`
+	GatewayID      string `json:"gatewayID"`
+	EntryID        string `json:"entryID"`
+	Method         string `json:"method"`
+	Path           string `json:"path"`
+	Host           string `json:"host,omitempty"`
+	APIKey         string `json:"apiKey,omitempty"`
+	ContentType    string `json:"contentType,omitempty"`
+	Body           string `json:"body,omitempty"`
+	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
+}
+
+type ProbeExecution struct {
+	ID                  string         `json:"id"`
+	TraceID             string         `json:"traceID"`
+	SourceCluster       string         `json:"sourceCluster"`
+	GatewayID           string         `json:"gatewayID"`
+	Method              string         `json:"method"`
+	Target              string         `json:"target"`
+	State               string         `json:"state"`
+	StartedAt           string         `json:"startedAt"`
+	CompletedAt         string         `json:"completedAt,omitempty"`
+	ResponseCode        int            `json:"responseCode,omitempty"`
+	ResponseBytes       int64          `json:"responseBytes,omitempty"`
+	DurationMillis      int64          `json:"durationMillis,omitempty"`
+	LogSource           string         `json:"logSource"`
+	Hops                []ObservedHop  `json:"hops"`
+	Segments            []ProbeSegment `json:"segments,omitempty"`
+	FederatedSnapshotID string         `json:"federatedSnapshotID,omitempty"`
+	SnapshotConsistency string         `json:"snapshotConsistency,omitempty"`
+	Gaps                []string       `json:"gaps"`
+	Error               string         `json:"error,omitempty"`
+	EvidenceComplete    bool           `json:"evidenceComplete"`
+}
+
+type ProbeSegment struct {
+	Index               int           `json:"index"`
+	ClusterID           string        `json:"clusterID"`
+	GatewayID           string        `json:"gatewayID"`
+	GatewayName         string        `json:"gatewayName,omitempty"`
+	SnapshotID          string        `json:"snapshotID,omitempty"`
+	ObservedAt          string        `json:"observedAt,omitempty"`
+	State               string        `json:"state"`
+	Evidence            string        `json:"evidence"`
+	LogSource           string        `json:"logSource,omitempty"`
+	Transport           string        `json:"transport,omitempty"`
+	Destination         string        `json:"destination,omitempty"`
+	InferenceBasis      string        `json:"inferenceBasis,omitempty"`
+	InferenceConfidence string        `json:"inferenceConfidence,omitempty"`
+	Hops                []ObservedHop `json:"hops"`
+	Gaps                []string      `json:"gaps"`
+}
+
+type ObservedHop struct {
+	ObservedAt                string `json:"observedAt"`
+	ClusterID                 string `json:"clusterID"`
+	Pod                       string `json:"pod"`
+	Authority                 string `json:"authority,omitempty"`
+	Method                    string `json:"method,omitempty"`
+	Path                      string `json:"path,omitempty"`
+	Protocol                  string `json:"protocol,omitempty"`
+	RouteName                 string `json:"routeName,omitempty"`
+	UpstreamCluster           string `json:"upstreamCluster,omitempty"`
+	UpstreamHost              string `json:"upstreamHost,omitempty"`
+	UpstreamLocalAddress      string `json:"upstreamLocalAddress,omitempty"`
+	DownstreamRemoteAddress   string `json:"downstreamRemoteAddress,omitempty"`
+	ResponseCode              int    `json:"responseCode,omitempty"`
+	ResponseFlags             string `json:"responseFlags,omitempty"`
+	ResponseCodeDetails       string `json:"responseCodeDetails,omitempty"`
+	DurationMillis            int64  `json:"durationMillis,omitempty"`
+	UpstreamServiceTimeMillis int64  `json:"upstreamServiceTimeMillis,omitempty"`
+	UpstreamTransportFailure  string `json:"upstreamTransportFailureReason,omitempty"`
+	AILog                     string `json:"aiLog,omitempty"`
+	EvidenceSource            string `json:"evidenceSource"`
+	Correlation               string `json:"correlation,omitempty"`
+	Confidence                string `json:"confidence"`
+}
 
 type AgentCommand struct {
-	ID                      string `json:"id"`
-	ClusterID               string `json:"clusterID"`
-	Kind                    string `json:"kind"`
-	GatewayID               string `json:"gatewayID"`
-	Deadline                string `json:"deadline"`
-	ExecutionTimeoutSeconds int    `json:"executionTimeoutSeconds,omitempty"`
+	ID                      string        `json:"id"`
+	ClusterID               string        `json:"clusterID"`
+	Kind                    string        `json:"kind"`
+	GatewayID               string        `json:"gatewayID"`
+	Deadline                string        `json:"deadline"`
+	ExecutionTimeoutSeconds int           `json:"executionTimeoutSeconds,omitempty"`
+	Probe                   *ProbeCommand `json:"probe,omitempty"`
+}
+
+type ProbeCommand struct {
+	ProbeID     string `json:"probeID"`
+	TraceID     string `json:"traceID"`
+	GatewayID   string `json:"gatewayID"`
+	EntryID     string `json:"entryID,omitempty"`
+	Method      string `json:"method"`
+	Path        string `json:"path,omitempty"`
+	Host        string `json:"host,omitempty"`
+	APIKey      string `json:"apiKey,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
+	Body        string `json:"body,omitempty"`
+	StartedAt   string `json:"startedAt,omitempty"`
 }
 
 type AgentCommandResult struct {
-	CommandID string       `json:"commandID"`
-	ClusterID string       `json:"clusterID"`
-	Config    *EnvoyConfig `json:"config,omitempty"`
-	Error     string       `json:"error,omitempty"`
+	CommandID string          `json:"commandID"`
+	ClusterID string          `json:"clusterID"`
+	Config    *EnvoyConfig    `json:"config,omitempty"`
+	Probe     *ProbeExecution `json:"probe,omitempty"`
+	Error     string          `json:"error,omitempty"`
 }

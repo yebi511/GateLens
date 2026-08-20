@@ -37,7 +37,7 @@ Registry 的 `domain` 会优先按 `<service>`、`<service>.<namespace>` 或 `<s
 - McpBridge 没有 `spec.registries` 产生警告发现。
 - destination 未匹配到本 McpBridge 的 registry 产生警告发现，不推断未知目标。
 - Ingress Service 后端没有 Ready Endpoint 会作为错误后端参与请求解释。
-- 已匹配的 Higress Ingress 路径写入统一 route rule，因此现有的 Host、Path、Method 静态解释接口能返回 Ingress 和其后端。
+- Higress Ingress 继续进入统一配置拓扑，但不再用于静态预测请求路径；最终 Route 和后端以实时探测证据为准。
 
 ## 非目标
 

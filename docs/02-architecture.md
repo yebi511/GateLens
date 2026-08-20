@@ -27,9 +27,8 @@ flowchart LR
 | 采集器 | Watch K8s 资源，按需读取控制面与观测数据 | 最小权限、只读、记录时间与版本 |
 | 适配器 | 标准/专有资源转规范化模型 | 与目标 CRD、控制面版本绑定 |
 | 有效图构建器 | 解析引用、绑定、状态和端点 | 保留对象和边的来源 |
-| 路由解释器 | 输入请求计算候选、淘汰原因、决策 | 不模拟不可见运行时状态 |
 | 证据关联器 | 把 Trace/日志/指标投影到逻辑路径 | 标明时间窗、来源和关联方法 |
-| API/UI | 图查询、请求模拟、异常展示 | 字段脱敏并实施 RBAC |
+| API/UI | 图查询、实时探测、异常展示 | 字段脱敏并实施 RBAC |
 
 ## 数据真实性分层
 
@@ -38,7 +37,7 @@ flowchart LR
 | 声明（Declared） | HTTPRoute spec、InferencePool spec | `配置声明` |
 | 解析（Resolved） | Controller status、EndpointSlice、xDS 快照 | `控制面/集群状态` |
 | 观测（Observed） | access log、span、metric | `实际观测` |
-| 推断（Inferred） | 解释器的路径结论 | `按快照推断` |
+| 推断（Inferred） | 配置拓扑中的跨集群关联或证据缺口 | 明确标记为推断，不作为实际路径 |
 
 所有推断必须携带输入快照 ID 与规则版本，不能作为运行事实展示。
 
@@ -47,8 +46,8 @@ flowchart LR
 1. 采集器生成不可变 `TopologySnapshot`，包含 `clusterID`、`observedAt`、UID 和 resourceVersion。
 2. 适配器转化节点、边、策略和状态；未知字段保留原始引用。
 3. 构图计算 Gateway -> Listener -> Route -> Rule -> Backend -> Service -> Endpoint，以及策略边。
-4. 用户请求固定到一个快照，解释器产生 `RouteExplanation`。
-5. 证据先按 trace/request ID 关联，再按时间窗和标签弱关联；弱关联明确标为近似。
+4. 用户从已发现的 Gateway Service 入口发起一次受控请求。
+5. 证据先按 probe ID/trace ID 关联，再按时间窗和标签弱关联；弱关联明确标为近似。
 
 ## Web 与 API 边界
 

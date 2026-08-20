@@ -13,7 +13,7 @@ GateLens 是解释和诊断层，不替代 Gateway Controller、Service Mesh、K
 | 平台工程师 | 新路由是否生效，跨命名空间引用是否允许？ | 有效配置图、引用与状态诊断 |
 | SRE/运维 | 某模型请求为何 5xx 或超时？ | 请求时间线、候选后端、失败阶段 |
 | AI 基础设施工程师 | 流量为何没有进入预期推理池？ | 推理后端选择解释、端点与健康状态 |
-| 应用开发者 | Host/path/header/model 请求匹配到哪条规则？ | 输入请求模拟器、匹配详情 |
+| 应用开发者 | 一条受控请求实际命中了哪条规则？ | 实时探测、访问日志证据 |
 
 ## 核心旅程
 
@@ -35,9 +35,9 @@ GateLens 是解释和诊断层，不替代 Gateway Controller、Service Mesh、K
 
 - 只读 Kubernetes 接入：Gateway API 核心资源、Service、EndpointSlice、Namespace、ReferenceGrant。
 - 已安装的 Gateway API Inference Extension CRD 非结构化采集与显示；关键语义由版本化适配器解析。
-- 通用 HTTP 路由解释：Host、Path、Method、Header、Query、权重后端、跨命名空间引用。
+- HTTP 配置拓扑核验：Route 条件、权重后端和跨命名空间引用；不预测最终运行时选路。
 - 先支持一种团队实际使用最多的网关；不假设 Envoy、Istio、Higress 的扩展语义相同。
-- 拓扑、资源详情、请求模拟、配置健康检查、时间范围内证据视图。
+- 拓扑、资源详情、实时探测、配置健康检查、时间范围内证据视图。
 - OpenTelemetry Trace 与 Prometheus 的可选只读连接器。
 
 ## 非目标

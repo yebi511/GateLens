@@ -25,9 +25,10 @@ type Config struct {
 }
 
 type Runner struct {
-	reader source.Reader
-	config Config
-	client *http.Client
+	reader        source.Reader
+	probeExecutor source.ProbeExecutor
+	config        Config
+	client        *http.Client
 }
 
 func New(reader source.Reader, config Config) (*Runner, error) {
@@ -44,7 +45,8 @@ func New(reader source.Reader, config Config) (*Runner, error) {
 	if config.Interval <= 0 {
 		config.Interval = 30 * time.Second
 	}
-	return &Runner{reader: reader, config: config, client: &http.Client{Timeout: 15 * time.Second}}, nil
+	probeExecutor, _ := reader.(source.ProbeExecutor)
+	return &Runner{reader: reader, probeExecutor: probeExecutor, config: config, client: &http.Client{Timeout: 15 * time.Second}}, nil
 }
 
 func (r *Runner) Run(ctx context.Context) error {
@@ -104,10 +106,12 @@ const (
 	snapshotReadyRetryDelay  = 2 * time.Second
 	commandRetryDelay        = 2 * time.Second
 	maxCommandPollRetryDelay = 30 * time.Second
+	maxConcurrentObservers   = 8
 )
 
 func (r *Runner) runCommands(ctx context.Context) {
 	pollRetryDelay := commandRetryDelay
+	observerSlots := make(chan struct{}, maxConcurrentObservers)
 	for ctx.Err() == nil {
 		command, ok, err := r.nextCommand(ctx)
 		if err != nil {
@@ -127,20 +131,35 @@ func (r *Runner) runCommands(ctx context.Context) {
 		if !ok {
 			continue
 		}
-
-		result := r.executeCommand(ctx, command)
-		for attempt := 1; attempt <= 3; attempt++ {
-			err = r.sendCommandResult(ctx, result)
-			if err == nil {
-				break
-			}
-			if attempt == 3 {
-				fmt.Printf("GateLens agent command result upload failed: %v\n", err)
-				break
-			}
-			if !waitForRetry(ctx, commandRetryDelay) {
+		if command.Kind == domain.AgentCommandProbeObserve {
+			select {
+			case observerSlots <- struct{}{}:
+				go func(command domain.AgentCommand) {
+					defer func() { <-observerSlots }()
+					r.executeAndSendCommand(ctx, command)
+				}(command)
+			case <-ctx.Done():
 				return
 			}
+			continue
+		}
+		r.executeAndSendCommand(ctx, command)
+	}
+}
+
+func (r *Runner) executeAndSendCommand(ctx context.Context, command domain.AgentCommand) {
+	result := r.executeCommand(ctx, command)
+	for attempt := 1; attempt <= 3; attempt++ {
+		err := r.sendCommandResult(ctx, result)
+		if err == nil {
+			return
+		}
+		if attempt == 3 {
+			fmt.Printf("GateLens agent command result upload failed: %v\n", err)
+			return
+		}
+		if !waitForRetry(ctx, commandRetryDelay) {
+			return
 		}
 	}
 }
@@ -200,6 +219,36 @@ func (r *Runner) executeCommand(ctx context.Context, command domain.AgentCommand
 			return result
 		}
 		result.Config = &config
+	case domain.AgentCommandProbeHTTP:
+		if r.probeExecutor == nil {
+			result.Error = "probe execution is not supported by this agent"
+			return result
+		}
+		if command.Probe == nil {
+			result.Error = "probe command payload is required"
+			return result
+		}
+		probe, err := r.probeExecutor.ExecuteProbe(commandCtx, *command.Probe)
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		result.Probe = &probe
+	case domain.AgentCommandProbeObserve:
+		if r.probeExecutor == nil {
+			result.Error = "probe observation is not supported by this agent"
+			return result
+		}
+		if command.Probe == nil {
+			result.Error = "probe observation payload is required"
+			return result
+		}
+		probe, err := r.probeExecutor.ObserveProbe(commandCtx, *command.Probe)
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+		result.Probe = &probe
 	default:
 		result.Error = fmt.Sprintf("unsupported agent command kind %q", command.Kind)
 	}

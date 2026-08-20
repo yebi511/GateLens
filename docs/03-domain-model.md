@@ -23,7 +23,7 @@ flowchart LR
 | `PolicyAttachment` | target, scope, order, effect, sourceRef | 策略生效范围 |
 | `BackendCandidate` | ref, weight, availability, eligibilityReasons | 后端候选 |
 | `TopologySnapshot` | id, clusterID, observedAt, sources, graph | 可复现计算输入 |
-| `RouteExplanation` | snapshotID, request, steps, outcome, confidence | 请求模拟结论 |
+| `ProbeExecution` | probeID, request summary, segments, gaps, completeness | 实时探测结果 |
 | `EvidenceEvent` | timestamp, type, attributes, source, correlation | 运行时事实 |
 
 ## 解释器顺序

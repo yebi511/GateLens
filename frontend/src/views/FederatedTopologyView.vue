@@ -485,7 +485,7 @@ onBeforeUnmount(() => {
         <h1>{{ activeCluster.name }}</h1>
         <p>{{ activeCluster.id }} · {{ activeCluster.version }} · {{ activeCluster.namespaces.length }} 个命名空间</p>
       </div>
-      <button class="primary-button" type="button" @click="emit('navigate', 'simulator')">模拟请求</button>
+      <button class="primary-button" type="button" @click="emit('navigate', 'probe')">实时探测</button>
     </div>
 
     <div class="federated-context single-cluster-context">

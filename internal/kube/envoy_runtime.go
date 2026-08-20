@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -36,6 +37,7 @@ type proxyPod struct {
 	UID       types.UID
 	Container string
 	AdminPort int
+	Labels    map[string]string
 }
 
 type gatewayRuntime struct {
@@ -115,7 +117,7 @@ func resolveGatewayRuntime(gateway *unstructured.Unstructured, classes map[strin
 	runtime := gatewayRuntime{GatewayID: "gateway/" + gateway.GetNamespace() + "/" + gateway.GetName(), Controller: controller, WorkloadID: workloadID, WorkloadName: workloadName, Namespace: candidates[0].Namespace}
 	for _, pod := range selected {
 		container := proxyContainer(pod, kind)
-		runtime.Pods = append(runtime.Pods, proxyPod{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID, Container: container, AdminPort: proxyAdminPort(pod, container, kind)})
+		runtime.Pods = append(runtime.Pods, proxyPod{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID, Container: container, AdminPort: proxyAdminPort(pod, container, kind), Labels: copyLabels(pod.Labels)})
 	}
 	return runtime, len(runtime.Pods) > 0
 }
@@ -297,6 +299,141 @@ func gatewayRuntimeConditions(runtime gatewayRuntime) []string {
 	}
 }
 
+func discoverGatewayProbeEntries(snap *snapshot, services map[string]*corev1.Service, endpoints map[string][]domain.TopologyNode) {
+	for _, runtime := range snap.runtimes {
+		for serviceKey, service := range services {
+			if service.Namespace != runtime.Namespace || len(service.Spec.Selector) == 0 || service.Spec.Type == corev1.ServiceTypeExternalName {
+				continue
+			}
+			if !serviceSelectsRuntime(service, runtime) {
+				continue
+			}
+			addresses := gatewayServiceAddresses(service, endpoints[serviceKey])
+			addGatewayServiceMetadata(snap, runtime.GatewayID, service, addresses)
+			for _, port := range service.Spec.Ports {
+				scheme, protocol, ok := probePortProtocol(port)
+				if !ok {
+					continue
+				}
+				id := fmt.Sprintf("%s/probe-entry/%s/%s/%d", runtime.GatewayID, service.Namespace, service.Name, port.Port)
+				entry := domain.ProbeEntry{
+					ID: id, GatewayID: runtime.GatewayID, ClusterID: snap.context.Cluster.ID,
+					Namespace: service.Namespace, ServiceName: service.Name,
+					DNSName: service.Name + "." + service.Namespace + ".svc.cluster.local",
+					Port:    port.Port, Scheme: scheme, Protocol: protocol,
+					DisplayName: fmt.Sprintf("%s/%s:%d (%s)", service.Namespace, service.Name, port.Port, strings.ToUpper(protocol)),
+					Addresses:   addresses,
+				}
+				snap.probeEntries[id] = entry
+				snap.topology.ProbeEntries = append(snap.topology.ProbeEntries, entry)
+			}
+		}
+	}
+	sort.Slice(snap.topology.ProbeEntries, func(i, j int) bool {
+		left, right := snap.topology.ProbeEntries[i], snap.topology.ProbeEntries[j]
+		if left.Namespace != right.Namespace {
+			return left.Namespace < right.Namespace
+		}
+		if left.ServiceName != right.ServiceName {
+			return left.ServiceName < right.ServiceName
+		}
+		if left.Port != right.Port {
+			return left.Port < right.Port
+		}
+		return left.Protocol < right.Protocol
+	})
+}
+
+func addGatewayServiceMetadata(snap *snapshot, gatewayID string, service *corev1.Service, addresses []string) {
+	for index := range snap.topology.Nodes {
+		node := &snap.topology.Nodes[index]
+		if node.ID != gatewayID {
+			continue
+		}
+		conditions := []string{
+			"Service=" + service.Namespace + "/" + service.Name,
+			"ServiceDNS=" + service.Name + "." + service.Namespace + ".svc.cluster.local",
+		}
+		for _, address := range addresses {
+			conditions = append(conditions, "Address="+address)
+		}
+		for _, condition := range conditions {
+			found := false
+			for _, existing := range node.Conditions {
+				if existing == condition {
+					found = true
+					break
+				}
+			}
+			if !found {
+				node.Conditions = append(node.Conditions, condition)
+			}
+		}
+		return
+	}
+}
+
+func gatewayServiceAddresses(service *corev1.Service, endpoints []domain.TopologyNode) []string {
+	seen := map[string]bool{}
+	var result []string
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+		if value == "" || strings.EqualFold(value, corev1.ClusterIPNone) || seen[value] {
+			return
+		}
+		seen[value] = true
+		result = append(result, value)
+	}
+	add(service.Spec.ClusterIP)
+	for _, address := range service.Spec.ClusterIPs {
+		add(address)
+	}
+	for _, address := range service.Spec.ExternalIPs {
+		add(address)
+	}
+	for _, ingress := range service.Status.LoadBalancer.Ingress {
+		add(ingress.IP)
+		add(ingress.Hostname)
+	}
+	for _, endpoint := range endpoints {
+		for _, condition := range endpoint.Conditions {
+			if address, ok := strings.CutPrefix(condition, "Address="); ok {
+				add(address)
+			}
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func serviceSelectsRuntime(service *corev1.Service, runtime gatewayRuntime) bool {
+	selector := labels.SelectorFromSet(service.Spec.Selector)
+	for _, pod := range runtime.Pods {
+		if selector.Matches(labels.Set(pod.Labels)) {
+			return true
+		}
+	}
+	return false
+}
+
+func probePortProtocol(port corev1.ServicePort) (string, string, bool) {
+	if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP {
+		return "", "", false
+	}
+	hint := strings.ToLower(strings.TrimSpace(port.Name))
+	if port.AppProtocol != nil && strings.TrimSpace(*port.AppProtocol) != "" {
+		hint = strings.ToLower(strings.TrimSpace(*port.AppProtocol))
+	}
+	switch {
+	case hint == "https", hint == "tls", strings.HasPrefix(hint, "https-"), strings.HasSuffix(hint, "/https"), strings.HasSuffix(hint, "/wss"):
+		return "https", "https", true
+	case hint == "http", hint == "http2", hint == "h2c", hint == "ws", strings.HasPrefix(hint, "http-"), strings.HasPrefix(hint, "http2-"), strings.HasSuffix(hint, "/http"), strings.HasSuffix(hint, "/http2"), strings.HasSuffix(hint, "/h2c"), strings.HasSuffix(hint, "/ws"):
+		return "http", "http", true
+	default:
+		return "", "", false
+	}
+}
+
 func addStandaloneGatewayRuntimes(snap *snapshot, deployments, pods cache.Store) {
 	claimed := map[string]struct{}{}
 	for _, runtime := range snap.runtimes {
@@ -352,7 +489,7 @@ func addStandaloneGatewayRuntimes(snap *snapshot, deployments, pods cache.Store)
 		}
 		for _, pod := range selected {
 			container := proxyContainer(pod, kind)
-			runtime.Pods = append(runtime.Pods, proxyPod{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID, Container: container, AdminPort: proxyAdminPort(pod, container, kind)})
+			runtime.Pods = append(runtime.Pods, proxyPod{Name: pod.Name, Namespace: pod.Namespace, UID: pod.UID, Container: container, AdminPort: proxyAdminPort(pod, container, kind), Labels: copyLabels(pod.Labels)})
 		}
 		snap.runtimes[runtime.GatewayID] = runtime
 		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
@@ -362,6 +499,10 @@ func addStandaloneGatewayRuntimes(snap *snapshot, deployments, pods cache.Store)
 			Source: "apps/v1 Deployment / v1 Pod", WorkloadScope: runtime.Namespace,
 		})
 	}
+}
+
+func copyLabels(labels map[string]string) map[string]string {
+	return maps.Clone(labels)
 }
 func addGatewayRuntime(snap *snapshot, gateway *unstructured.Unstructured, classes map[string]string, deployments, pods cache.Store) {
 	runtime, ok := resolveGatewayRuntime(gateway, classes, deployments.List(), pods.List())

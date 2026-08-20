@@ -10,5 +10,7 @@
 - [0004 前端 MVP 聚焦静态配置解释](0004-frontend-mvp-focuses-on-static-explanation.md)
 - [0007 每集群 Agent 汇总并自动发现跨集群关系](0007-agent-federation-auto-discovery.md)
 - [0008 联邦运行时查询使用 Agent 主动长轮询](0008-agent-runtime-command-polling.md)
+- [0009 首版主动探测使用 Higress 访问日志](0009-active-probe-uses-higress-access-logs.md)
+- [0010 移除静态请求路径预检](0010-remove-static-route-explanation.md)
 - [0005 模型路由采用联邦多跳拓扑](0005-model-routing-as-federated-multi-hop-topology.md)
 - [0006 Web 与 API 独立构建和部署](0006-separate-web-and-api.md)

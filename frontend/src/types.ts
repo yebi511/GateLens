@@ -1,5 +1,5 @@
 export type Status = 'healthy' | 'warning' | 'error'
-export type ViewID = 'topology' | 'envoy' | 'simulator' | 'health' | 'resources'
+export type ViewID = 'topology' | 'envoy' | 'probe' | 'health' | 'resources'
 
 export interface Cluster { id: string; name: string; version: string }
 export interface Snapshot { id: string; observedAt: string; state: string }
@@ -48,6 +48,7 @@ export interface Topology {
   clusters?: TopologyCluster[]
   nodes: TopologyNode[]
   edges: TopologyEdge[]
+  probeEntries?: ProbeEntry[]
   truncated: boolean
 }
 export interface Finding {
@@ -148,22 +149,92 @@ export interface EnvoyConfig {
   extensions: EnvoyExtension[]
   rawConfig?: unknown
 }
-export interface RouteExplanationRequest {
-  snapshotID: string
-  gateway: string
-  listener: string
-  method: string
-  host: string
-  path: string
+export interface ProbeEntry {
+  id: string
+  gatewayID: string
+  clusterID: string
   namespace: string
-  model: string
+  serviceName: string
+  dnsName: string
+  port: number
+  scheme: string
+  protocol: string
+  displayName: string
+  addresses?: string[]
 }
-export interface ExplainStep { hop: number; title: string; detail: string; state: string; targetID: string }
-export interface RouteExplanation {
-  snapshotID: string
+
+export interface ProbeRequest {
+  sourceCluster: string
+  gatewayID: string
+  entryID: string
+  method: string
+  path: string
+  host?: string
+  apiKey?: string
+  contentType?: string
+  body?: string
+  timeoutSeconds?: number
+}
+export interface ObservedHop {
   observedAt: string
-  outcome: string
+  clusterID: string
+  pod: string
+  authority?: string
+  method?: string
+  path?: string
+  protocol?: string
+  routeName?: string
+  upstreamCluster?: string
+  upstreamHost?: string
+  upstreamLocalAddress?: string
+  downstreamRemoteAddress?: string
+  responseCode?: number
+  responseFlags?: string
+  responseCodeDetails?: string
+  durationMillis?: number
+  upstreamServiceTimeMillis?: number
+  upstreamTransportFailureReason?: string
+  aiLog?: string
+  evidenceSource: string
+  correlation?: string
   confidence: string
-  summary: string
-  steps: ExplainStep[]
+}
+export interface ProbeSegment {
+  index: number
+  clusterID: string
+  gatewayID: string
+  gatewayName?: string
+  snapshotID?: string
+  observedAt?: string
+  state: string
+  evidence: string
+  logSource?: string
+  transport?: string
+  destination?: string
+  inferenceBasis?: string
+  inferenceConfidence?: 'high' | 'medium' | 'low' | 'ambiguous'
+  hops: ObservedHop[]
+  gaps: string[]
+}
+export interface ProbeExecution {
+  id: string
+  traceID: string
+  sourceCluster: string
+  gatewayID: string
+  method: string
+  target: string
+  state: string
+  startedAt: string
+  completedAt?: string
+  responseCode?: number
+  responseBytes?: number
+  durationMillis?: number
+  logSource: string
+  hops: ObservedHop[]
+  segments: ProbeSegment[]
+  federatedSnapshotID?: string
+  snapshotConsistency?: string
+  gaps: string[]
+  error?: string
+  evidenceComplete: boolean
 }
