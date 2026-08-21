@@ -251,6 +251,7 @@ docs/                产品、架构和 ADR 文档
 - [前端展示设计](docs/05-frontend-design.md)
 - [跨命名空间与跨集群设计](docs/06-federated-routing.md)
 - [Higress Ingress 与 McpBridge 采集设计](docs/09-higress-ingress-mcpbridge.md)
+- [Istio/Higress ext_proc 访问日志接入手册](docs/11-istio-ext-proc-access-log.md)
 - [架构决策记录](docs/adr/README.md)
 
 ## 安全

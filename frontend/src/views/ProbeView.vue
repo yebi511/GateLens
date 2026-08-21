@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { AlertTriangle, CheckCircle2, Clock3, LoaderCircle, RadioTower, Server, Trash2, Waypoints } from '@lucide/vue'
 import { api } from '../api/client'
-import type { ProbeExecution, ProbeSegment, Topology } from '../types'
+import type { ExtProcObservation, ObservedHop, ProbeExecution, ProbeSegment, Topology, TopologyNode } from '../types'
 import { formatCSTDateTime } from '../utils/dateTime'
 
 const props = defineProps<{ topology: Topology; clusterId: string }>()
@@ -46,6 +46,175 @@ function segmentTitle(segment: ProbeSegment) {
 	if (segment.inferenceBasis) return '候选下一跳'
 	return '网关证据缺口'
 }
+
+function extProcLabel(observation: ExtProcObservation) {
+  switch (observation.outcome) {
+    case 'success': return '调用成功'
+    case 'error': return '处理器错误'
+    case 'timeout': return '处理超时'
+    case 'fail-open': return '失败放行'
+    case 'immediate-response': return '处理器直接响应'
+    default: return observation.invoked ? '已调用' : '证据不足'
+  }
+}
+
+function extProcCalls(observation: ExtProcObservation) {
+  return (observation.requestHeaderCalls ?? 0) + (observation.requestBodyCalls ?? 0) +
+    (observation.responseHeaderCalls ?? 0) + (observation.responseBodyCalls ?? 0)
+}
+
+function extProcLatency(observation: ExtProcObservation) {
+  return ((observation.requestHeaderLatencyUs ?? 0) + (observation.requestBodyLatencyUs ?? 0) +
+    (observation.responseHeaderLatencyUs ?? 0) + (observation.responseBodyLatencyUs ?? 0)) / 1000
+}
+
+function nodeHealthForProcessor(observation: ExtProcObservation, clusterID: string): TopologyNode | undefined {
+  const identities = [observation.processor, observation.selectedPool]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase())
+  if (!identities.length) return undefined
+  return props.topology.nodes.find((node) =>
+    node.clusterID === clusterID &&
+    ['BBR', 'BodyBasedRouting', 'EndpointPicker', 'EPP', 'InferencePool', 'Service'].includes(node.kind) &&
+    identities.includes(node.name.toLowerCase()),
+  )
+}
+
+interface ResolvedUpstream {
+  endpoint?: TopologyNode
+  service?: TopologyNode
+  registry?: TopologyNode
+  mcpBridge?: TopologyNode
+  externalTarget?: TopologyNode
+  resolutionAmbiguous?: boolean
+  podName?: string
+  podNamespace?: string
+}
+
+function conditionValue(node: TopologyNode | undefined, key: string) {
+  const prefix = `${key}=`
+  return node?.conditions.find((condition) => condition.startsWith(prefix))?.slice(prefix.length)
+}
+
+function upstreamAddress(upstreamHost?: string) {
+  const value = (upstreamHost ?? '').trim().toLowerCase()
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(value)
+  if (bracketed) return bracketed[1]
+  return value.split(':').length === 2 ? value.replace(/:\d+$/, '') : value
+}
+
+function hostFromCluster(upstreamCluster?: string) {
+  const value = (upstreamCluster ?? '').trim().toLowerCase()
+  const parts = value.split('|')
+  return (parts.length >= 4 ? parts[3] : value).replace(/\.$/, '')
+}
+
+function serviceIdentityFromCluster(upstreamCluster?: string) {
+  const host = hostFromCluster(upstreamCluster)
+  const labels = host.split('.')
+  if (labels.length >= 3 && labels[2] === 'svc') return { name: labels[0], namespace: labels[1] }
+  return undefined
+}
+
+function registryMatchesCluster(node: TopologyNode, clusterHost: string) {
+  if (node.kind !== 'Registry' || !clusterHost) return false
+  const domain = conditionValue(node, 'Domain')?.trim().toLowerCase().replace(/\.$/, '')
+  const type = conditionValue(node, 'Type')?.trim().toLowerCase()
+  const identity = type ? `${node.name.trim().toLowerCase()}.${type}` : ''
+  return clusterHost === domain || clusterHost === identity
+}
+
+function resolveUpstream(hop: ObservedHop): ResolvedUpstream {
+  const address = upstreamAddress(hop.upstreamHost)
+  const nodes = props.topology.nodes.filter((node) => node.clusterID === hop.clusterID)
+  const endpoint = nodes.find((node) =>
+    node.kind === 'Endpoint' && address && conditionValue(node, 'Address')?.toLowerCase() === address,
+  )
+  const clusterHost = hostFromCluster(hop.upstreamCluster)
+  const registries = nodes.filter((node) => registryMatchesCluster(node, clusterHost))
+  const registry = registries.length === 1 ? registries[0] : undefined
+  const registryTargets = registry
+    ? props.topology.edges
+      .filter((edge) => edge.from === registry.id && edge.relation === 'resolves')
+      .map((edge) => nodes.find((node) => node.id === edge.to))
+      .filter((node): node is TopologyNode => Boolean(node))
+    : []
+  const registryTarget = registryTargets.length === 1 ? registryTargets[0] : undefined
+  const registryService = registryTarget?.kind === 'Service' ? registryTarget : undefined
+  const externalTarget = registryTarget?.kind === 'ExternalTarget' ? registryTarget : undefined
+  const mcpBridge = registry
+    ? props.topology.edges
+      .filter((edge) => edge.to === registry.id && edge.relation === 'discovers')
+      .map((edge) => nodes.find((node) => node.id === edge.from && node.kind === 'McpBridge'))
+      .find((node): node is TopologyNode => Boolean(node))
+    : undefined
+  const endpointService = conditionValue(endpoint, 'Service')?.split('/')
+  const clusterService = serviceIdentityFromCluster(hop.upstreamCluster)
+  const serviceNamespace = endpointService?.length === 2
+    ? endpointService[0]
+    : registryService?.namespace ?? clusterService?.namespace
+  const serviceName = endpointService?.length === 2
+    ? endpointService[1]
+    : registryService?.name ?? clusterService?.name
+  const service = registryService ?? nodes.find((node) =>
+    node.kind === 'Service' && node.namespace.toLowerCase() === serviceNamespace && node.name.toLowerCase() === serviceName,
+  )
+  const targetRef = conditionValue(endpoint, 'TargetRef')?.split('/')
+  const isPod = targetRef?.length === 3 && targetRef[0].toLowerCase() === 'pod'
+  return {
+    endpoint,
+    service,
+    registry,
+    mcpBridge,
+    externalTarget,
+    resolutionAmbiguous: registries.length > 1 || registryTargets.length > 1,
+    podNamespace: isPod ? targetRef[1] : undefined,
+    podName: isPod ? targetRef[2] : undefined,
+  }
+}
+
+function registryLabel(resolved: ResolvedUpstream) {
+  if (!resolved.registry) return ''
+  const bridge = resolved.mcpBridge ? `${resolved.mcpBridge.namespace}/${resolved.mcpBridge.name}` : 'McpBridge'
+  return `${bridge} / ${resolved.registry.name}`
+}
+
+function externalTargetLabel(target: TopologyNode) {
+  const address = conditionValue(target, 'Address') || target.name
+  const port = conditionValue(target, 'Port')
+  return port ? `${address}:${port}` : address
+}
+
+function finalUpstreamTitle(hop: ObservedHop, resolved: ResolvedUpstream) {
+  if (resolved.podName) return `${resolved.podNamespace}/${resolved.podName}`
+  return hop.upstreamHost || '上游未记录'
+}
+
+function finalUpstreamKind(resolved: ResolvedUpstream) {
+  if (resolved.podName) return 'Pod'
+  if (resolved.endpoint) return 'Endpoint'
+  if (resolved.resolutionAmbiguous) return 'Ambiguous'
+  return 'Envoy'
+}
+
+function registryResolutionLabel(resolved: ResolvedUpstream) {
+  const registry = registryLabel(resolved)
+  if (resolved.service) return `${registry} -> Service ${resolved.service.namespace}/${resolved.service.name}`
+  if (resolved.externalTarget) return `${registry} -> ${externalTargetLabel(resolved.externalTarget)}`
+  return registry
+}
+
+function gatewaySnapshotNode(segment: ProbeSegment) {
+  const exact = props.topology.nodes.find((node) => node.kind === 'Gateway' && node.id === segment.gatewayID)
+  if (exact) return exact
+  const matches = props.topology.nodes.filter((node) =>
+    node.kind === 'Gateway' && node.clusterID === segment.clusterID && node.name === segment.gatewayName,
+  )
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+const finalHop = computed(() => result.value?.hops[result.value.hops.length - 1])
+const finalUpstream = computed(() => finalHop.value ? resolveUpstream(finalHop.value) : {})
 
 function draftStorageKey(clusterID: string) {
   return `gatelens.probe-draft.v1:${encodeURIComponent(clusterID)}`
@@ -188,18 +357,33 @@ async function submit() {
             <section v-for="segment in segments" :key="segment.gatewayID" class="probe-segment" :class="`segment-${segment.state}`">
               <header class="segment-header">
                 <span><Waypoints :size="17" /></span>
-                <div><strong>{{ segmentTitle(segment) }} · {{ segment.gatewayName || segment.gatewayID }}</strong><p>{{ segment.clusterID }}<template v-if="segment.snapshotID"> · {{ segment.snapshotID }}</template><template v-if="segment.observedAt"> · {{ formatCSTDateTime(segment.observedAt) }}</template></p></div>
+                <div><strong>{{ segmentTitle(segment) }} · {{ segment.gatewayName || segment.gatewayID }}</strong><p>{{ segment.clusterID }}<template v-if="segment.snapshotID"> · {{ segment.snapshotID }}</template><template v-if="segment.observedAt"> · {{ formatCSTDateTime(segment.observedAt) }}</template></p><small v-if="gatewaySnapshotNode(segment)" class="segment-gateway-snapshot" :class="`text-${gatewaySnapshotNode(segment)?.status}`">网关快照 · {{ gatewaySnapshotNode(segment)?.namespace }}/{{ gatewaySnapshotNode(segment)?.name }} · {{ gatewaySnapshotNode(segment)?.statusText }}</small></div>
 				<em :class="`evidence-${segment.evidence === 'observed' ? 'observed' : segment.inferenceBasis ? 'inferred' : 'missing'}`">{{ evidenceLabel(segment) }}</em>
               </header>
               <div v-if="segment.transport || segment.destination" class="transit-boundary"><span>{{ segment.transport || '跨集群' }}</span><code>{{ segment.destination || '远端入口' }}</code></div>
 			  <div v-if="segment.inferenceBasis" class="segment-inference"><strong>推断依据</strong><span>{{ segment.inferenceBasis }}</span></div>
               <article v-for="(hop, index) in segment.hops" :key="`${hop.pod}-${hop.observedAt}-${index}`" class="segment-event">
-                <div><strong>{{ hop.routeName || '未命名 Route' }}</strong><p>{{ hop.pod || segment.gatewayName }} · {{ hop.authority }}{{ hop.path }}</p><dl><div><dt>Cluster</dt><dd>{{ hop.upstreamCluster || '-' }}</dd></div><div><dt>Upstream</dt><dd>{{ hop.upstreamHost || '-' }}</dd></div><div><dt>结果</dt><dd>HTTP {{ hop.responseCode || '-' }} · {{ hop.durationMillis }} ms</dd></div><div v-if="hop.aiLog"><dt>AI log</dt><dd>{{ hop.aiLog }}</dd></div></dl></div>
+                <div><strong>{{ hop.routeName || '未命名 Route' }}</strong><p>{{ hop.pod || segment.gatewayName }} · {{ hop.authority }}{{ hop.path }}</p><dl><div><dt>上游 Cluster</dt><dd>{{ hop.upstreamCluster || '-' }}</dd></div><div><dt>实际上游地址</dt><dd>{{ hop.upstreamHost || '-' }}</dd></div><div v-if="resolveUpstream(hop).registry"><dt>McpBridge Registry</dt><dd>{{ registryLabel(resolveUpstream(hop)) }}</dd></div><div v-if="resolveUpstream(hop).resolutionAmbiguous"><dt>Registry 解析</dt><dd class="text-warning">同域名对应多个 Registry 或解析目标，无法唯一确认</dd></div><div v-else-if="resolveUpstream(hop).externalTarget"><dt>Registry 解析目标</dt><dd>{{ externalTargetLabel(resolveUpstream(hop).externalTarget!) }}</dd></div><div v-if="resolveUpstream(hop).service"><dt>上游 Service</dt><dd>{{ resolveUpstream(hop).service?.namespace }}/{{ resolveUpstream(hop).service?.name }}</dd></div><div v-if="resolveUpstream(hop).podName"><dt>实际上游 Pod</dt><dd>{{ resolveUpstream(hop).podNamespace }}/{{ resolveUpstream(hop).podName }}</dd></div><div><dt>上游响应</dt><dd>HTTP {{ hop.responseCode || '-' }} · {{ hop.durationMillis }} ms</dd></div><div v-if="resolveUpstream(hop).endpoint"><dt>实际 Endpoint 快照</dt><dd :class="`text-${resolveUpstream(hop).endpoint?.status}`">{{ resolveUpstream(hop).endpoint?.statusText }}</dd></div><div v-else-if="resolveUpstream(hop).service"><dt>Registry Service 快照</dt><dd :class="`text-${resolveUpstream(hop).service?.status}`">{{ resolveUpstream(hop).service?.statusText }}</dd></div><div v-else-if="resolveUpstream(hop).externalTarget"><dt>Registry 目标快照</dt><dd :class="`text-${resolveUpstream(hop).externalTarget?.status}`">{{ resolveUpstream(hop).externalTarget?.statusText }}</dd></div><div v-if="hop.responseFlags && hop.responseFlags !== '-'"><dt>响应标志</dt><dd>{{ hop.responseFlags }}</dd></div><div v-if="hop.responseCodeDetails"><dt>响应详情</dt><dd>{{ hop.responseCodeDetails }}</dd></div><div v-if="hop.upstreamTransportFailureReason"><dt>传输失败</dt><dd>{{ hop.upstreamTransportFailureReason }}</dd></div><div v-if="hop.aiLog"><dt>AI log</dt><dd>{{ hop.aiLog }}</dd></div></dl>
+                  <section v-for="(extProc, extProcIndex) in hop.extProcs" :key="`${extProc.processor}-${extProcIndex}`" class="ext-proc-evidence" :class="`outcome-${extProc.outcome}`">
+                    <header><strong>{{ extProc.processor || 'ext_proc' }}</strong><span>{{ extProcLabel(extProc) }}</span></header>
+                    <dl>
+                      <div><dt>处理消息 / 耗时</dt><dd>{{ extProcCalls(extProc) }} 次 · {{ extProcLatency(extProc).toFixed(2) }} ms</dd></div>
+                      <div><dt>gRPC</dt><dd>{{ extProc.grpcStatus || '-' }}</dd></div>
+                      <div v-if="nodeHealthForProcessor(extProc, hop.clusterID)"><dt>K8s 快照健康</dt><dd :class="`text-${nodeHealthForProcessor(extProc, hop.clusterID)?.status}`">{{ nodeHealthForProcessor(extProc, hop.clusterID)?.name }} · {{ nodeHealthForProcessor(extProc, hop.clusterID)?.statusText }}</dd></div>
+                      <div v-if="extProc.ruleID"><dt>规则</dt><dd>{{ extProc.ruleID }}</dd></div>
+                      <div v-if="extProc.selectedPool"><dt>Pool</dt><dd>{{ extProc.selectedPool }}</dd></div>
+                      <div v-if="extProc.selectedEndpoint"><dt>选择 Endpoint</dt><dd>{{ extProc.selectedEndpoint }}</dd></div>
+                      <div v-if="extProc.reasonCode"><dt>原因码</dt><dd>{{ extProc.reasonCode }}</dd></div>
+                    </dl>
+                    <p v-if="extProc.failedOpen || (extProc.failureModeAllowed && extProc.outcome !== 'success')">该处理器失败后继续转发，最终 HTTP 成功不能代表此节点正常。</p>
+                  </section>
+                  <p v-if="!hop.extProcs?.length" class="ext-proc-missing">未输出 ext_proc Filter State，无法证明本次请求是否调用 BBR/EPP。</p>
+                </div>
               </article>
 			  <div v-if="!segment.hops.length" class="segment-empty"><AlertTriangle :size="15" /><span>{{ segment.gaps[0] || '该网关是下一跳候选，但没有本次请求的运行时证据。' }}</span></div>
               <p v-if="segment.logSource" class="segment-source">{{ segment.logSource }}</p>
             </section>
-            <article v-if="result.hops.length" class="observed-hop endpoint-hop"><span><Server :size="17" /></span><div><strong>{{ result.hops[result.hops.length - 1].upstreamHost || '上游未记录' }}</strong><p>{{ result.hops[result.hops.length - 1].upstreamCluster }}</p></div><em>Envoy</em></article>
+            <article v-if="finalHop" class="observed-hop endpoint-hop"><span><Server :size="17" /></span><div><strong>{{ finalUpstreamTitle(finalHop, finalUpstream) }}</strong><p><template v-if="finalUpstream.podName">{{ finalHop.upstreamHost }} · </template>{{ finalHop.upstreamCluster }}</p><p v-if="finalUpstream.registry">配置映射 · {{ registryResolutionLabel(finalUpstream) }}</p><p v-if="finalUpstream.resolutionAmbiguous" class="text-warning">Registry 解析有歧义</p></div><em>{{ finalUpstreamKind(finalUpstream) }}</em></article>
           </div>
           <div v-if="result.error || result.gaps.length" class="probe-gaps"><strong><Clock3 :size="15" />证据缺口</strong><p v-if="result.error">{{ result.error }}</p><p v-for="gap in result.gaps" :key="gap">{{ gap }}</p></div>
         </template>

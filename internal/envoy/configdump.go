@@ -489,6 +489,7 @@ func parseRoutes(config map[string]any, routeConfigs map[string]map[string]any, 
 				Match:   routeMatchSummary(host, match),
 				Cluster: stringValue(action, "cluster", ""),
 			}
+			item.ExtProcs = routeExtProcTargets(host, route)
 			for _, rawCluster := range slice(object(action, "weighted_clusters"), "clusters") {
 				cluster := object(rawCluster)
 				weight := intValue(cluster, "weight")
@@ -500,6 +501,34 @@ func parseRoutes(config map[string]any, routeConfigs map[string]map[string]any, 
 			chain.Routes = append(chain.Routes, item)
 		}
 	}
+}
+
+func routeExtProcTargets(host, route map[string]any) []domain.EnvoyRouteExtProcTarget {
+	configs := map[string]map[string]any{}
+	for _, owner := range []map[string]any{host, route} {
+		for name, raw := range object(owner, "typed_per_filter_config") {
+			config := object(raw)
+			typeURL := stringValue(config, "@type", "")
+			if strings.Contains(strings.ToLower(name+" "+typeURL), "ext_proc") {
+				configs[name] = config
+			}
+		}
+	}
+	names := make([]string, 0, len(configs))
+	for name := range configs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	targets := make([]domain.EnvoyRouteExtProcTarget, 0, len(names))
+	for _, name := range names {
+		config := configs[name]
+		targets = append(targets, domain.EnvoyRouteExtProcTarget{
+			FilterName:   name,
+			TypeURL:      stringValue(config, "@type", ""),
+			GRPCClusters: nestedStringValues(config, "cluster_name"),
+		})
+	}
+	return targets
 }
 
 func parseClusters(section map[string]any, result *domain.EnvoyConfig, endpointAssignments map[string]map[string]any) {

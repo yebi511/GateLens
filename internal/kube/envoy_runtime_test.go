@@ -108,6 +108,9 @@ func TestRebuildMergesRuntimeIntoGatewayNode(t *testing.T) {
 	if gatewayNode == nil {
 		t.Fatal("Gateway node not found")
 	}
+	if gatewayNode.Status != domain.StatusHealthy || gatewayNode.StatusText != "1 Ready" {
+		t.Fatalf("Gateway runtime status=%s %q", gatewayNode.Status, gatewayNode.StatusText)
+	}
 	for _, want := range []string{"EnvoyConfig=available", "Controller=istio.io/gateway-controller", "Workload=istio-system/public-gateway-istio", "ReadyReplicas=1"} {
 		if !hasCondition(gatewayNode.Conditions, want) {
 			t.Fatalf("Gateway conditions=%v, missing %q", gatewayNode.Conditions, want)

@@ -51,7 +51,10 @@ async function getEnvoy(gatewayID: string): Promise<EnvoyConfig> {
     for (const chain of listener.filterChains) {
       chain.httpFilters ??= []
       chain.routes ??= []
-      for (const route of chain.routes) route.weightedClusters ??= []
+      for (const route of chain.routes) {
+        route.weightedClusters ??= []
+        route.extProcs ??= []
+      }
     }
   }
   for (const cluster of value.clusters) cluster.endpoints ??= []

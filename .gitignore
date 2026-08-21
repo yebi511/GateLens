@@ -1,5 +1,6 @@
 .idea/
 bin/
+.tmp/
 frontend/node_modules/
 frontend/dist/
 deploy/docker.env

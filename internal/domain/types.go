@@ -161,10 +161,17 @@ type EnvoyExtensionDependency struct {
 }
 
 type EnvoyRoute struct {
-	Name             string                 `json:"name"`
-	Match            string                 `json:"match"`
-	Cluster          string                 `json:"cluster"`
-	WeightedClusters []EnvoyWeightedCluster `json:"weightedClusters,omitempty"`
+	Name             string                    `json:"name"`
+	Match            string                    `json:"match"`
+	Cluster          string                    `json:"cluster"`
+	WeightedClusters []EnvoyWeightedCluster    `json:"weightedClusters,omitempty"`
+	ExtProcs         []EnvoyRouteExtProcTarget `json:"extProcs,omitempty"`
+}
+
+type EnvoyRouteExtProcTarget struct {
+	FilterName   string   `json:"filterName"`
+	TypeURL      string   `json:"typeURL,omitempty"`
+	GRPCClusters []string `json:"grpcClusters,omitempty"`
 }
 
 type EnvoyWeightedCluster struct {
@@ -277,28 +284,56 @@ type ProbeSegment struct {
 }
 
 type ObservedHop struct {
-	ObservedAt                string `json:"observedAt"`
-	ClusterID                 string `json:"clusterID"`
-	Pod                       string `json:"pod"`
-	Authority                 string `json:"authority,omitempty"`
-	Method                    string `json:"method,omitempty"`
-	Path                      string `json:"path,omitempty"`
-	Protocol                  string `json:"protocol,omitempty"`
-	RouteName                 string `json:"routeName,omitempty"`
-	UpstreamCluster           string `json:"upstreamCluster,omitempty"`
-	UpstreamHost              string `json:"upstreamHost,omitempty"`
-	UpstreamLocalAddress      string `json:"upstreamLocalAddress,omitempty"`
-	DownstreamRemoteAddress   string `json:"downstreamRemoteAddress,omitempty"`
-	ResponseCode              int    `json:"responseCode,omitempty"`
-	ResponseFlags             string `json:"responseFlags,omitempty"`
-	ResponseCodeDetails       string `json:"responseCodeDetails,omitempty"`
-	DurationMillis            int64  `json:"durationMillis,omitempty"`
-	UpstreamServiceTimeMillis int64  `json:"upstreamServiceTimeMillis,omitempty"`
-	UpstreamTransportFailure  string `json:"upstreamTransportFailureReason,omitempty"`
-	AILog                     string `json:"aiLog,omitempty"`
-	EvidenceSource            string `json:"evidenceSource"`
-	Correlation               string `json:"correlation,omitempty"`
-	Confidence                string `json:"confidence"`
+	ObservedAt                string               `json:"observedAt"`
+	ClusterID                 string               `json:"clusterID"`
+	Pod                       string               `json:"pod"`
+	Authority                 string               `json:"authority,omitempty"`
+	Method                    string               `json:"method,omitempty"`
+	Path                      string               `json:"path,omitempty"`
+	Protocol                  string               `json:"protocol,omitempty"`
+	RouteName                 string               `json:"routeName,omitempty"`
+	UpstreamCluster           string               `json:"upstreamCluster,omitempty"`
+	UpstreamHost              string               `json:"upstreamHost,omitempty"`
+	UpstreamLocalAddress      string               `json:"upstreamLocalAddress,omitempty"`
+	DownstreamRemoteAddress   string               `json:"downstreamRemoteAddress,omitempty"`
+	ResponseCode              int                  `json:"responseCode,omitempty"`
+	ResponseFlags             string               `json:"responseFlags,omitempty"`
+	ResponseCodeDetails       string               `json:"responseCodeDetails,omitempty"`
+	DurationMillis            int64                `json:"durationMillis,omitempty"`
+	UpstreamServiceTimeMillis int64                `json:"upstreamServiceTimeMillis,omitempty"`
+	UpstreamTransportFailure  string               `json:"upstreamTransportFailureReason,omitempty"`
+	AILog                     string               `json:"aiLog,omitempty"`
+	ExtProcs                  []ExtProcObservation `json:"extProcs,omitempty"`
+	EvidenceSource            string               `json:"evidenceSource"`
+	Correlation               string               `json:"correlation,omitempty"`
+	Confidence                string               `json:"confidence"`
+}
+
+// ExtProcObservation contains the allowlisted per-request fields emitted by
+// Envoy's ext_proc filter state. It intentionally excludes arbitrary typed
+// metadata so processor responses cannot leak request or model payloads.
+type ExtProcObservation struct {
+	Processor                 string `json:"processor,omitempty"`
+	RuleID                    string `json:"ruleID,omitempty"`
+	SelectedPool              string `json:"selectedPool,omitempty"`
+	SelectedEndpoint          string `json:"selectedEndpoint,omitempty"`
+	ReasonCode                string `json:"reasonCode,omitempty"`
+	RequestHeaderCalls        int    `json:"requestHeaderCalls,omitempty"`
+	RequestBodyCalls          int    `json:"requestBodyCalls,omitempty"`
+	ResponseHeaderCalls       int    `json:"responseHeaderCalls,omitempty"`
+	ResponseBodyCalls         int    `json:"responseBodyCalls,omitempty"`
+	RequestHeaderLatencyUS    int64  `json:"requestHeaderLatencyUs,omitempty"`
+	RequestBodyLatencyUS      int64  `json:"requestBodyLatencyUs,omitempty"`
+	ResponseHeaderLatencyUS   int64  `json:"responseHeaderLatencyUs,omitempty"`
+	ResponseBodyLatencyUS     int64  `json:"responseBodyLatencyUs,omitempty"`
+	GRPCStatus                string `json:"grpcStatus,omitempty"`
+	FailureModeAllowed        bool   `json:"failureModeAllowed,omitempty"`
+	FailedOpen                bool   `json:"failedOpen,omitempty"`
+	MessageTimeout            bool   `json:"messageTimeout,omitempty"`
+	HTTPError                 bool   `json:"httpError,omitempty"`
+	ReceivedImmediateResponse bool   `json:"receivedImmediateResponse,omitempty"`
+	Invoked                   bool   `json:"invoked"`
+	Outcome                   string `json:"outcome"`
 }
 
 type AgentCommand struct {

@@ -515,6 +515,8 @@ func addGatewayRuntime(snap *snapshot, gateway *unstructured.Unstructured, class
 		if node.ID != runtime.GatewayID {
 			continue
 		}
+		node.Status = domain.StatusHealthy
+		node.StatusText = fmt.Sprintf("%d Ready", len(runtime.Pods))
 		node.Conditions = append(node.Conditions, gatewayRuntimeConditions(runtime)...)
 		break
 	}

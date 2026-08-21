@@ -1,6 +1,6 @@
 # 主动探测与实际流量路径观测设计
 
-> 实现状态（2026-08-13）：阶段 A 已实现，使用 Higress JSON 访问日志，不依赖 eBPF。当前覆盖源 Agent 发起一次 HTTP 请求、按联邦拓扑在多个已接入 Gateway 上只读采集同一 GateLens probe ID 或 trace ID、分段展示 Route/upstream、`ai_log` 和证据缺口；基于 Span 父子关系的分布式 Trace、ext_proc Filter State、Hubble/eBPF 仍为后续工作。
+> 实现状态（2026-08-21）：阶段 A 已实现，使用 Higress JSON 访问日志，不依赖 eBPF。当前覆盖源 Agent 发起一次 HTTP 请求、按联邦拓扑在多个已接入 Gateway 上只读采集同一 GateLens probe ID 或 trace ID、分段展示 Route/upstream、`ai_log`、一个或多个 ext_proc Filter State 和证据缺口；基于 Span 父子关系的分布式 Trace、Envoy 聚合指标连接器和 Hubble/eBPF 仍为后续工作。
 
 ## 0. 首版使用说明
 
@@ -62,7 +62,7 @@ response_code, response_flags, response_code_details, duration
 
 Agent 只注入 `X-GateLens-Probe-ID` 和 B3 trace header，不注入 `X-Request-ID`。跨多个网关时，必须确保路由、WasmPlugin、鉴权插件和 Header 改写规则不会删除或覆盖 `x-gatelens-probe-id`；每一跳都要输出同名 JSON 字段。
 
-`ai_log=%FILTER_STATE(wasm.ai_log:PLAIN)%` 是可选证据。GateLens 不解析或推测其业务语义，只原样展示非空结果。默认格式没有 ext_proc Filter State，因此 BBR/EPP 的调用阶段、gRPC 状态和内部选择理由不会自动出现。
+`ai_log=%FILTER_STATE(wasm.ai_log:PLAIN)%` 是可选证据。GateLens 不解析或推测其业务语义，只原样展示非空结果。默认格式没有 ext_proc Filter State，因此 BBR/EPP 的调用阶段、gRPC 状态和内部选择理由不会自动出现。ext_proc 的具体追加方式见 [0.6](#06-bbrepp-与-ext_proc-边界)。
 
 ### 0.3 部署 Agent
 
@@ -147,6 +147,9 @@ curl -X POST http://gatelens.example.com/api/v1/probes \
 
 ### 0.6 BBR、EPP 与 ext_proc 边界
 
+可直接执行的 Istio/Higress 日志配置、BBR EnvoyFilter 修改和验证步骤见
+[Istio/Higress ext_proc 访问日志接入手册](11-istio-ext-proc-access-log.md)。本节保留设计依据和证据边界。
+
 默认 Higress 日志可以显示 Wasm 已写入的 `ai_log` 和最终路由结果，但没有以下 ext_proc 运行时字段：
 
 ```text
@@ -158,7 +161,69 @@ ext_proc gRPC status
 processor decision metadata
 ```
 
-因此首版可能看到“BBR/EPP 执行后的最终 Route/Endpoint”，或者看到其主动写入 `ai_log` 的摘要，但不能仅凭默认日志证明具体调用了哪个外部处理器。后续可在 Envoy 支持的版本中把 `%FILTER_STATE(envoy.filters.http.ext_proc:TYPED)%` 加入访问日志，并要求 BBR/EPP 通过 allowlist dynamic metadata/Filter State 输出 `processor`、`rule_id`、`selected_pool/endpoint` 和 `reason_code`。这些属于 L7 证据扩展，不依赖 eBPF。
+因此默认日志只能看到“BBR/EPP 执行后的最终 Route/Endpoint”，或者看到其主动写入 `ai_log` 的摘要，不能证明具体调用了哪个外部处理器。GateLens 第一版支持读取 Envoy 内置 ext_proc Filter State，不需要修改 BBR/EPP 自身日志，也不依赖 eBPF。
+
+#### 0.6.1 确认 ext_proc Filter State 行为
+
+GateLens 当前适配的 Envoy 实现会自动在“HTTP filter 配置名称”对应的 Filter State namespace 中创建 ext_proc logging info，不需要 `emit_filter_state_stats`。例如配置名为 `envoy.filters.http.ext_proc` 时，日志读取同名 namespace。应以实际数据面使用的 `ext_proc.proto` 和 `config_dump` 为准；不支持该字段的版本加入 `emit_filter_state_stats` 会导致配置校验失败。
+
+#### 0.6.2 在 Higress JSON accessLogFormat 中追加字段
+
+单个 ext_proc 时，最简单的配置是在现有 JSON 对象末尾追加 `TYPED` Filter State。下面仅是要追加的字段，不是完整的 `accessLogFormat`：
+
+```text
+"ext_proc":"%FILTER_STATE(envoy.filters.http.ext_proc:TYPED)%",
+"gatelens_probe_id":"%REQ(X-GATELENS-PROBE-ID)%"
+```
+
+GateLens 同时兼容 `TYPED` 被日志系统编码为 JSON 对象或 JSON 字符串的情况。若当前版本不支持 `TYPED`，可以只追加该 Envoy 实现实际提供的字段：
+
+```text
+"ext_proc_request_header_latency_us":"%FILTER_STATE(envoy.filters.http.ext_proc:FIELD:request_header_latency_us)%",
+"ext_proc_request_header_call_status":"%FILTER_STATE(envoy.filters.http.ext_proc:FIELD:request_header_call_status)%",
+"ext_proc_request_body_call_count":"%FILTER_STATE(envoy.filters.http.ext_proc:FIELD:request_body_call_count)%",
+"ext_proc_request_body_total_latency_us":"%FILTER_STATE(envoy.filters.http.ext_proc:FIELD:request_body_total_latency_us)%",
+"ext_proc_request_body_last_call_status":"%FILTER_STATE(envoy.filters.http.ext_proc:FIELD:request_body_last_call_status)%",
+"ext_proc_failed_open":"%FILTER_STATE(envoy.filters.http.ext_proc:FIELD:failed_open)%",
+"gatelens_probe_id":"%REQ(X-GATELENS-PROBE-ID)%"
+```
+
+字段值可以是 JSON 字符串或数字。GateLens 会解析调用次数、阶段延迟、gRPC status、`failed_open` 和 immediate response；gRPC status `4` 标记为超时，`failed_open=true` 标记为失败放行。仅凭最终 HTTP 200 不会反推 BBR/EPP 成功。
+
+#### 0.6.3 同一网关有 BBR 和 EPP 两个 ext_proc
+
+Envoy 使用 HTTP filter 的配置名称作为 Filter State key。两个过滤器都命名为 `envoy.filters.http.ext_proc` 时会共用一个 `ExtProcLoggingInfo`：header 统计只保留第一次记录，body 统计会混合累计，不能可靠拆分 BBR 和 EPP。`stat_prefix` 只区分 Envoy 聚合指标，不会改变 Filter State key。
+
+推荐保留控制器生成的 EPP 名称，并只把 EnvoyFilter 注入的 BBR 改成唯一配置名称。Envoy 根据 `typed_config.@type` 选择 ext_proc factory，因此该名称可以是实例标识：
+
+```yaml
+- name: gatelens.filters.http.ext_proc.bbr
+  typed_config:
+    "@type": type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor
+    stat_prefix: bbr
+    grpc_service:
+      envoy_grpc:
+        cluster_name: outbound|9004||body-based-router.inference.svc.cluster.local
+    # 保留原 BBR processing_mode 等配置
+```
+
+EPP 继续使用 `envoy.filters.http.ext_proc`，避免破坏 InferencePool 控制器生成的 `typed_per_filter_config`。如果控制器允许设置 `stat_prefix: epp`，可用于区分 `/stats` 聚合指标，但不是请求级身份。访问日志分别读取两个实际名称：
+
+```text
+"ext_proc_bbr":"%FILTER_STATE(gatelens.filters.http.ext_proc.bbr:TYPED)%",
+"ext_proc_epp":"%FILTER_STATE(envoy.filters.http.ext_proc:TYPED)%",
+"gatelens_probe_id":"%REQ(X-GATELENS-PROBE-ID)%"
+```
+
+一个集群可以有多个 EPP，但一次请求最终只关联其 Route 命中的 InferencePool。GateLens 使用已观测 `route_name`，结合 `InferencePool.spec.endpointPickerRef`、对应 Service/Endpoint 和路由级 `ExtProcPerRoute.grpc_service` 确定本次 EPP；无法唯一匹配时标记歧义，不把其他 EPP 画进实际路径。GateLens 的 Envoy 配置页已按 Route 展示该 per-route ext_proc gRPC cluster。全局 `cluster_name: dummy` 且 processing mode 全部 `SKIP` 只是占位配置，本身不能证明调用了哪个 EPP；必须继续检查该 Route 的 `typed_per_filter_config` 和 `dummy` Cluster 实际配置。
+
+处理器愿意提供扩展 metadata 时，GateLens 只读取以下白名单字段：`processor`、`rule_id`、`selected_pool`、`selected_endpoint` 和 `reason_code`，不会保存任意 metadata、请求正文或响应正文。
+
+#### 0.6.4 推理服务证据
+
+推理服务无需修改日志。GateLens 使用同一条网关日志中的 `upstream_cluster`、`upstream_host`、`response_code`、`response_flags`、`response_code_details`、`upstream_service_time` 和 `upstream_transport_failure_reason` 展示选择结果与故障。这里的 `upstream_host` 证明 Envoy 选择或尝试了该地址；有上游响应码时才能证明上游返回了 HTTP 响应，不能据此断言模型业务语义成功。
+
+页面还会把处理器身份、selected pool 和 upstream 地址与同集群 Kubernetes 快照中的 BBR、EndpointPicker、InferencePool、Service 或 Endpoint 精确匹配，并显示该对象的快照健康状态。这是配置/Ready 辅助证据，不是本次请求证据；名称或地址不能唯一匹配时不显示，避免误关联。
 
 ## 1. 背景
 

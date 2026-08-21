@@ -283,6 +283,11 @@ onBeforeUnmount(() => {
                   <div v-for="route in chain.routes" :key="route.name" class="envoy-route">
                     <div><strong>{{ route.name }}</strong><small>{{ route.match }}</small></div>
                     <code>{{ route.weightedClusters?.map((item) => `${item.name} (${item.weight})`).join(' · ') || route.cluster || 'direct response' }}</code>
+                    <div v-for="extProc in route.extProcs" :key="extProc.filterName" class="cluster-inline">
+                      <span class="cluster-icon"><Link2 :size="14" aria-hidden="true" /></span>
+                      <div><strong>Route ext_proc</strong><small>{{ extProc.filterName }}</small></div>
+                      <span>{{ extProc.grpcClusters?.join(' · ') || '未解析到 gRPC cluster' }}</span>
+                    </div>
                     <div v-for="cluster in routeClusters(route.cluster, route.weightedClusters)" :key="cluster.name" class="cluster-inline">
                       <span class="cluster-icon"><Server :size="14" aria-hidden="true" /></span>
                       <div><strong>{{ cluster.name }}</strong><small>{{ cluster.type }} · {{ cluster.discovery }} · {{ cluster.endpoints.length }} endpoints</small></div>

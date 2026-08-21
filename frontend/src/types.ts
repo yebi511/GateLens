@@ -83,6 +83,12 @@ export interface EnvoyRoute {
   match: string
   cluster: string
   weightedClusters?: EnvoyWeightedCluster[]
+  extProcs?: EnvoyRouteExtProcTarget[]
+}
+export interface EnvoyRouteExtProcTarget {
+  filterName: string
+  typeURL?: string
+  grpcClusters?: string[]
 }
 export interface EnvoyHTTPFilter {
   name: string
@@ -195,9 +201,33 @@ export interface ObservedHop {
   upstreamServiceTimeMillis?: number
   upstreamTransportFailureReason?: string
   aiLog?: string
+  extProcs?: ExtProcObservation[]
   evidenceSource: string
   correlation?: string
   confidence: string
+}
+export interface ExtProcObservation {
+  processor?: string
+  ruleID?: string
+  selectedPool?: string
+  selectedEndpoint?: string
+  reasonCode?: string
+  requestHeaderCalls?: number
+  requestBodyCalls?: number
+  responseHeaderCalls?: number
+  responseBodyCalls?: number
+  requestHeaderLatencyUs?: number
+  requestBodyLatencyUs?: number
+  responseHeaderLatencyUs?: number
+  responseBodyLatencyUs?: number
+  grpcStatus?: string
+  failureModeAllowed: boolean
+  failedOpen: boolean
+  messageTimeout: boolean
+  httpError: boolean
+  receivedImmediateResponse: boolean
+  invoked: boolean
+  outcome: 'success' | 'error' | 'timeout' | 'fail-open' | 'unknown' | string
 }
 export interface ProbeSegment {
   index: number

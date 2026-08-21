@@ -194,6 +194,73 @@ func TestParseRuntimeExtensionsAndRelationships(t *testing.T) {
 	}
 }
 
+func TestParseKeepsSameNameExtProcInstancesAndRouteEPPOverride(t *testing.T) {
+	bbrConfig := map[string]any{
+		"@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+		"grpc_service": map[string]any{"envoy_grpc": map[string]any{
+			"cluster_name": "outbound|9004||body-based-router.inference.svc.cluster.local",
+		}},
+	}
+	eppConfig := map[string]any{
+		"@type":              "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExternalProcessor",
+		"failure_mode_allow": true,
+		"grpc_service": map[string]any{"envoy_grpc": map[string]any{
+			"cluster_name": "dummy",
+		}},
+	}
+	route := map[string]any{
+		"name":  "inference.pool-a.0",
+		"match": map[string]any{"prefix": "/v1"},
+		"route": map[string]any{"cluster": "inference-pool-a"},
+		"typed_per_filter_config": map[string]any{
+			"envoy.filters.http.ext_proc": map[string]any{
+				"@type": "type.googleapis.com/envoy.extensions.filters.http.ext_proc.v3.ExtProcPerRoute",
+				"overrides": map[string]any{"grpc_service": map[string]any{"envoy_grpc": map[string]any{
+					"cluster_name": "outbound|9002||pool-a-epp.inference.svc.cluster.local",
+				}}},
+			},
+		},
+	}
+	hcm := map[string]any{
+		"http_filters": []any{
+			map[string]any{"name": "envoy.filters.http.ext_proc", "typed_config": bbrConfig},
+			map[string]any{"name": "envoy.filters.http.ext_proc", "typed_config": eppConfig},
+			map[string]any{"name": "envoy.filters.http.router"},
+		},
+		"route_config": map[string]any{"virtual_hosts": []any{map[string]any{
+			"name": "inference", "domains": []any{"*"}, "routes": []any{route},
+		}}},
+	}
+	listener := map[string]any{
+		"name": "http", "filter_chains": []any{map[string]any{"filters": []any{map[string]any{
+			"name": "envoy.filters.network.http_connection_manager", "typed_config": hcm,
+		}}}},
+	}
+	dump := map[string]any{"configs": []any{
+		map[string]any{"dynamic_listeners": []any{map[string]any{"active_state": map[string]any{"listener": listener}}}},
+		map[string]any{"dynamic_active_clusters": []any{
+			map[string]any{"cluster": map[string]any{"name": "outbound|9004||body-based-router.inference.svc.cluster.local"}},
+			map[string]any{"cluster": map[string]any{"name": "dummy"}},
+			map[string]any{"cluster": map[string]any{"name": "outbound|9002||pool-a-epp.inference.svc.cluster.local"}},
+		}},
+	}}
+
+	result := Parse(dump, "snap-two-ext-proc", "2026-08-21T00:00:00Z")
+	var extProcs []domain.EnvoyExtension
+	for _, extension := range result.Extensions {
+		if extension.Kind == "ext_proc" {
+			extProcs = append(extProcs, extension)
+		}
+	}
+	if len(extProcs) != 2 {
+		t.Fatalf("ext_proc instances=%d, want 2: %#v", len(extProcs), extProcs)
+	}
+	parsedRoute := result.Listeners[0].FilterChains[0].Routes[0]
+	if len(parsedRoute.ExtProcs) != 1 || len(parsedRoute.ExtProcs[0].GRPCClusters) != 1 || parsedRoute.ExtProcs[0].GRPCClusters[0] != "outbound|9002||pool-a-epp.inference.svc.cluster.local" {
+		t.Fatalf("route ext_proc targets=%#v", parsedRoute.ExtProcs)
+	}
+}
+
 func TestMissingECDSExtensionIsWarning(t *testing.T) {
 	hcm := map[string]any{"http_filters": []any{
 		map[string]any{
