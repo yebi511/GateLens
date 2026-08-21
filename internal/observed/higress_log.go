@@ -11,25 +11,51 @@ import (
 )
 
 type higressAccessLog struct {
-	AILog                    string `json:"ai_log"`
-	Authority                string `json:"authority"`
-	DownstreamRemoteAddress  string `json:"downstream_remote_address"`
-	Duration                 string `json:"duration"`
-	Method                   string `json:"method"`
-	Path                     string `json:"path"`
-	Protocol                 string `json:"protocol"`
-	GateLensProbeID          string `json:"gatelens_probe_id"`
-	ResponseCode             string `json:"response_code"`
-	ResponseCodeDetails      string `json:"response_code_details"`
-	ResponseFlags            string `json:"response_flags"`
-	RouteName                string `json:"route_name"`
-	StartTime                string `json:"start_time"`
-	TraceID                  string `json:"trace_id"`
-	UpstreamCluster          string `json:"upstream_cluster"`
-	UpstreamHost             string `json:"upstream_host"`
-	UpstreamLocalAddress     string `json:"upstream_local_address"`
-	UpstreamServiceTime      string `json:"upstream_service_time"`
-	UpstreamTransportFailure string `json:"upstream_transport_failure_reason"`
+	AILog                    string          `json:"ai_log"`
+	Authority                string          `json:"authority"`
+	DownstreamRemoteAddress  string          `json:"downstream_remote_address"`
+	Duration                 accessLogScalar `json:"duration"`
+	Method                   string          `json:"method"`
+	Path                     string          `json:"path"`
+	Protocol                 string          `json:"protocol"`
+	GateLensProbeID          string          `json:"gatelens_probe_id"`
+	ResponseCode             accessLogScalar `json:"response_code"`
+	ResponseCodeDetails      string          `json:"response_code_details"`
+	ResponseFlags            string          `json:"response_flags"`
+	RouteName                string          `json:"route_name"`
+	StartTime                string          `json:"start_time"`
+	TraceID                  string          `json:"trace_id"`
+	UpstreamCluster          string          `json:"upstream_cluster"`
+	UpstreamHost             string          `json:"upstream_host"`
+	UpstreamLocalAddress     string          `json:"upstream_local_address"`
+	UpstreamServiceTime      accessLogScalar `json:"upstream_service_time"`
+	UpstreamTransportFailure string          `json:"upstream_transport_failure_reason"`
+}
+
+// Envoy access-log JSON formats may quote numeric substitutions or emit them
+// as JSON numbers. Accept both forms so one numeric field cannot discard the
+// entire otherwise valid access-log record.
+type accessLogScalar string
+
+func (value *accessLogScalar) UnmarshalJSON(data []byte) error {
+	var text string
+	if len(data) > 0 && data[0] == '"' {
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+		*value = accessLogScalar(text)
+		return nil
+	}
+	if string(data) == "null" {
+		*value = ""
+		return nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(data, &number); err != nil {
+		return err
+	}
+	*value = accessLogScalar(number.String())
+	return nil
 }
 
 // ParseHigressLineForProbe accepts raw JSON and CRI-prefixed access log lines.
@@ -68,9 +94,9 @@ func ParseHigressLineForProbe(line, probeID, traceID, clusterID, pod, source str
 		UpstreamTransportFailure: entry.UpstreamTransportFailure, AILog: entry.AILog,
 		EvidenceSource: source, Correlation: correlation, Confidence: "observed",
 	}
-	hop.ResponseCode = integer(entry.ResponseCode)
-	hop.DurationMillis = integer64(entry.Duration)
-	hop.UpstreamServiceTimeMillis = integer64(entry.UpstreamServiceTime)
+	hop.ResponseCode = integer(string(entry.ResponseCode))
+	hop.DurationMillis = integer64(string(entry.Duration))
+	hop.UpstreamServiceTimeMillis = integer64(string(entry.UpstreamServiceTime))
 	if hop.ObservedAt == "" {
 		hop.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}

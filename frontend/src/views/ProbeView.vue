@@ -12,6 +12,7 @@ const selectedEntry = computed(() => entries.value.find((entry) => entry.id === 
 const defaultForm = () => ({ entryID: '', method: 'POST', path: '/v1/chat/completions', host: '', apiKey: '', contentType: 'application/json', body: '', timeoutSeconds: 15 })
 const form = reactive(defaultForm())
 const rememberAPIKey = ref(false)
+const apiKeyInput = ref<HTMLInputElement | null>(null)
 const result = ref<ProbeExecution | null>(null)
 const loading = ref(false)
 let restoringDraft = false
@@ -120,6 +121,12 @@ watch(entries, (items) => {
 async function submit() {
   loading.value = true
   result.value = null
+  // Password managers and browser autofill can update the input without an
+  // input event. Read its live value at submit time so the first probe carries
+  // the credential even when Vue's model has not observed that update yet.
+  const apiKey = apiKeyInput.value?.value ?? form.apiKey
+  form.apiKey = apiKey
+  if (rememberAPIKey.value) persistDraft()
   try {
     result.value = await api.createProbe({
       sourceCluster: props.clusterId,
@@ -128,7 +135,7 @@ async function submit() {
       method: form.method,
       path: form.path.trim(),
       host: form.host.trim() || undefined,
-      apiKey: form.apiKey || undefined,
+      apiKey: apiKey || undefined,
       contentType: form.body ? form.contentType.trim() || undefined : undefined,
       body: form.body || undefined,
       timeoutSeconds: form.timeoutSeconds,
@@ -160,7 +167,7 @@ async function submit() {
         <label>Host <span class="optional">可选</span><input v-model="form.host" placeholder="api.example.com" /></label>
         <div class="probe-secret-field">
           <label for="probe-api-key">API Key <span class="optional">可选</span></label>
-          <input id="probe-api-key" v-model="form.apiKey" type="password" autocomplete="off" maxlength="8192" placeholder="sk-..." />
+          <input id="probe-api-key" ref="apiKeyInput" v-model="form.apiKey" type="password" autocomplete="off" maxlength="8192" placeholder="sk-..." />
           <label class="probe-session-toggle"><input v-model="rememberAPIKey" type="checkbox" />本次标签页保留</label>
         </div>
         <label>Content-Type<input v-model="form.contentType" /></label>
