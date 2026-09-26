@@ -12,6 +12,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "npm run typecheck && vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
+	"test:probe": "tsc -p tsconfig.probe-tests.json && node --test .tmp/probe-tests/tests/probePresentation.test.js",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {

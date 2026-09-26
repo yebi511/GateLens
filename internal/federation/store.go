@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gatelens/gatelens/internal/domain"
+	"github.com/gatelens/gatelens/internal/observed"
 )
 
 type receivedSnapshot struct {
@@ -292,12 +293,13 @@ func (s *Store) completeFederatedProbe(ctx context.Context, execution domain.Pro
 		GatewayName: source.GatewayName, SnapshotID: source.SnapshotID, ObservedAt: source.ObservedAt,
 		State: segmentState(execution.Hops, execution.Gaps), Evidence: segmentEvidence(execution.Hops),
 		LogSource: execution.LogSource, Hops: append([]domain.ObservedHop(nil), execution.Hops...),
-		Gaps: append([]string(nil), execution.Gaps...),
+		Collection: execution.Collection,
+		Gaps:       append([]string(nil), execution.Gaps...),
 	}
 	execution.Segments = []domain.ProbeSegment{sourceSegment}
 	if len(targets) == 0 {
 		execution.EvidenceComplete = len(execution.Hops) > 0
-		return execution
+		return observed.EnrichProbe(execution)
 	}
 
 	type observedSegment struct {
@@ -371,7 +373,7 @@ func (s *Store) completeFederatedProbe(ctx context.Context, execution domain.Pro
 			break
 		}
 	}
-	return execution
+	return observed.EnrichProbe(execution)
 }
 
 func inferProbeGatewayCandidates(topology domain.Topology, targets []probeGatewayTarget, hops []domain.ObservedHop, observedGatewayIDs map[string]bool) map[string]probeGatewayInference {
@@ -511,6 +513,7 @@ func (s *Store) observeProbeGateway(ctx context.Context, execution domain.ProbeE
 		return segment
 	}
 	segment.Hops, segment.LogSource, segment.Gaps = result.Hops, result.LogSource, result.Gaps
+	segment.Collection = result.Collection
 	segment.State, segment.Evidence = segmentState(segment.Hops, segment.Gaps), segmentEvidence(segment.Hops)
 	return segment
 }

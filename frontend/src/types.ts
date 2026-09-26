@@ -182,6 +182,13 @@ export interface ProbeRequest {
   timeoutSeconds?: number
 }
 export interface ObservedHop {
+  id?: string
+  runtimeSource?: string
+  logSourceID?: string
+  logSequence?: number
+  requestStartTime?: string
+  internalRedirect?: boolean
+  aiRouting?: { provider?: string; requestModel?: string; upstreamModel?: string; responseModel?: string }
   observedAt: string
   clusterID: string
   pod: string
@@ -194,6 +201,7 @@ export interface ObservedHop {
   upstreamHost?: string
   upstreamLocalAddress?: string
   downstreamRemoteAddress?: string
+  downstreamLocalAddress?: string
   responseCode?: number
   responseFlags?: string
   responseCodeDetails?: string
@@ -230,6 +238,8 @@ export interface ExtProcObservation {
   outcome: 'success' | 'error' | 'timeout' | 'fail-open' | 'unknown' | string
 }
 export interface ProbeSegment {
+  collection?: ProbeCollection
+  attemptGroups?: ProbeAttemptGroup[]
   index: number
   clusterID: string
   gatewayID: string
@@ -247,6 +257,10 @@ export interface ProbeSegment {
   gaps: string[]
 }
 export interface ProbeExecution {
+  collection?: ProbeCollection
+  redirectSummary?: { observedRedirects: number; linkedRedirects: number; processState: 'observed' | 'partial' | 'ambiguous' | 'unknown' }
+  finalResponseHopID?: string
+  finalUpstreamHopID?: string
   id: string
   traceID: string
   sourceCluster: string
@@ -267,4 +281,22 @@ export interface ProbeExecution {
   gaps: string[]
   error?: string
   evidenceComplete: boolean
+}
+
+export interface ProbeCollection {
+  state: 'settled' | 'window-ended' | 'cancelled' | 'read-error' | 'unknown'
+  completedAt?: string
+  reasons?: string[]
+}
+
+export interface ProbeAttemptGroup {
+  id: string
+  runtimeSource?: string
+  hopIDs: string[]
+  relationState: 'linked' | 'unconfirmed' | 'missing-next' | 'ambiguous'
+  orderBasis: 'source-sequence' | 'unavailable'
+  links?: { from: string; to: string }[]
+  terminalCandidateIDs?: string[]
+  localTerminalHopID?: string
+  gaps: string[]
 }

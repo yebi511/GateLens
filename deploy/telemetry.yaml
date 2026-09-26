@@ -1,0 +1,12 @@
+apiVersion: telemetry.istio.io/v1
+kind: Telemetry
+metadata:
+  name: gatelens-gateway-access-log
+  namespace: inference
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: inference-gateway
+  accessLogging:
+    - providers:
+        - name: gatelens-envoy

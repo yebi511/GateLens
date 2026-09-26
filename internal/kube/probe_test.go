@@ -10,12 +10,81 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gatelens/gatelens/internal/domain"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestProbeCapturesDelayedRedirectLogsWithOneHTTPRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	writerDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		first := strings.ReplaceAll(probeLogLine("first", "internal_redirect:ai_usage_via_upstream", 400), "probe", r.Header.Get("X-GateLens-Probe-ID"))
+		last := strings.ReplaceAll(probeLogLine("last", "ai_usage_via_upstream", 200), "probe", r.Header.Get("X-GateLens-Probe-ID"))
+		if err := os.WriteFile(path, []byte(first), 0600); err != nil {
+			t.Error(err)
+		}
+		go func() {
+			defer close(writerDone)
+			time.Sleep(250 * time.Millisecond)
+			file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer file.Close()
+			if _, err := file.WriteString(last); err != nil {
+				t.Error(err)
+			}
+		}()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	parsed, _ := url.Parse(server.URL)
+	entry := domain.ProbeEntry{ID: "entry", GatewayID: "gateway", DNSName: parsed.Hostname(), Port: int32(mustPort(t, parsed.Port())), Scheme: parsed.Scheme}
+	store := &Store{clusterID: "edge", probeLogFile: path, snapshot: snapshot{runtimes: map[string]gatewayRuntime{"gateway": {Pods: []proxyPod{{Name: "pod", Namespace: "ns"}}}}, probeEntries: map[string]domain.ProbeEntry{"entry": entry}}}
+	command := domain.ProbeCommand{ProbeID: "probe", GatewayID: "gateway", EntryID: "entry", Method: "POST", Path: "/v1/chat/completions"}
+	result, err := store.ExecuteProbe(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-writerDone
+	if requests.Load() != 1 || result.ResponseCode != 200 || len(result.Hops) != 2 || !result.Hops[0].InternalRedirect {
+		t.Fatalf("requests=%d result=%+v", requests.Load(), result)
+	}
+	observed, err := store.ObserveProbe(context.Background(), command)
+	if err != nil || len(observed.Hops) != 2 || requests.Load() != 1 {
+		t.Fatalf("observed=%+v err=%v", observed, err)
+	}
+}
+
+func TestExecuteProbeDoesNotFollowClientRedirect(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.log")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var followed atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { followed.Add(1) }))
+	defer target.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
+	defer server.Close()
+	parsed, _ := url.Parse(server.URL)
+	entry := domain.ProbeEntry{ID: "entry", GatewayID: "gateway", DNSName: parsed.Hostname(), Port: int32(mustPort(t, parsed.Port())), Scheme: "http"}
+	store := &Store{clusterID: "edge", probeLogFile: path, snapshot: snapshot{runtimes: map[string]gatewayRuntime{"gateway": {Pods: []proxyPod{{Name: "pod"}}}}, probeEntries: map[string]domain.ProbeEntry{"entry": entry}}}
+	result, err := store.ExecuteProbe(context.Background(), domain.ProbeCommand{ProbeID: "probe", GatewayID: "gateway", EntryID: "entry", Method: "GET", Path: "/"})
+	if err != nil || result.ResponseCode != 302 || followed.Load() != 0 {
+		t.Fatalf("result=%+v err=%v followed=%d", result, err, followed.Load())
+	}
+}
 
 func TestExecuteProbeReadsFileIncrementAndInjectsIdentifiers(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "access.log")

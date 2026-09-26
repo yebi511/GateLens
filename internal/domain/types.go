@@ -243,47 +243,97 @@ type ProbeRequest struct {
 }
 
 type ProbeExecution struct {
-	ID                  string         `json:"id"`
-	TraceID             string         `json:"traceID"`
-	SourceCluster       string         `json:"sourceCluster"`
-	GatewayID           string         `json:"gatewayID"`
-	Method              string         `json:"method"`
-	Target              string         `json:"target"`
-	State               string         `json:"state"`
-	StartedAt           string         `json:"startedAt"`
-	CompletedAt         string         `json:"completedAt,omitempty"`
-	ResponseCode        int            `json:"responseCode,omitempty"`
-	ResponseBytes       int64          `json:"responseBytes,omitempty"`
-	DurationMillis      int64          `json:"durationMillis,omitempty"`
-	LogSource           string         `json:"logSource"`
-	Hops                []ObservedHop  `json:"hops"`
-	Segments            []ProbeSegment `json:"segments,omitempty"`
-	FederatedSnapshotID string         `json:"federatedSnapshotID,omitempty"`
-	SnapshotConsistency string         `json:"snapshotConsistency,omitempty"`
-	Gaps                []string       `json:"gaps"`
-	Error               string         `json:"error,omitempty"`
-	EvidenceComplete    bool           `json:"evidenceComplete"`
+	ID                  string                `json:"id"`
+	TraceID             string                `json:"traceID"`
+	SourceCluster       string                `json:"sourceCluster"`
+	GatewayID           string                `json:"gatewayID"`
+	Method              string                `json:"method"`
+	Target              string                `json:"target"`
+	State               string                `json:"state"`
+	StartedAt           string                `json:"startedAt"`
+	CompletedAt         string                `json:"completedAt,omitempty"`
+	ResponseCode        int                   `json:"responseCode,omitempty"`
+	ResponseBytes       int64                 `json:"responseBytes,omitempty"`
+	DurationMillis      int64                 `json:"durationMillis,omitempty"`
+	LogSource           string                `json:"logSource"`
+	Hops                []ObservedHop         `json:"hops"`
+	Segments            []ProbeSegment        `json:"segments,omitempty"`
+	FederatedSnapshotID string                `json:"federatedSnapshotID,omitempty"`
+	SnapshotConsistency string                `json:"snapshotConsistency,omitempty"`
+	Gaps                []string              `json:"gaps"`
+	Error               string                `json:"error,omitempty"`
+	EvidenceComplete    bool                  `json:"evidenceComplete"`
+	Collection          *ProbeCollection      `json:"collection,omitempty"`
+	RedirectSummary     *ProbeRedirectSummary `json:"redirectSummary,omitempty"`
+	FinalResponseHopID  string                `json:"finalResponseHopID,omitempty"`
+	FinalUpstreamHopID  string                `json:"finalUpstreamHopID,omitempty"`
 }
 
 type ProbeSegment struct {
-	Index               int           `json:"index"`
-	ClusterID           string        `json:"clusterID"`
-	GatewayID           string        `json:"gatewayID"`
-	GatewayName         string        `json:"gatewayName,omitempty"`
-	SnapshotID          string        `json:"snapshotID,omitempty"`
-	ObservedAt          string        `json:"observedAt,omitempty"`
-	State               string        `json:"state"`
-	Evidence            string        `json:"evidence"`
-	LogSource           string        `json:"logSource,omitempty"`
-	Transport           string        `json:"transport,omitempty"`
-	Destination         string        `json:"destination,omitempty"`
-	InferenceBasis      string        `json:"inferenceBasis,omitempty"`
-	InferenceConfidence string        `json:"inferenceConfidence,omitempty"`
-	Hops                []ObservedHop `json:"hops"`
-	Gaps                []string      `json:"gaps"`
+	Index               int                 `json:"index"`
+	ClusterID           string              `json:"clusterID"`
+	GatewayID           string              `json:"gatewayID"`
+	GatewayName         string              `json:"gatewayName,omitempty"`
+	SnapshotID          string              `json:"snapshotID,omitempty"`
+	ObservedAt          string              `json:"observedAt,omitempty"`
+	State               string              `json:"state"`
+	Evidence            string              `json:"evidence"`
+	LogSource           string              `json:"logSource,omitempty"`
+	Transport           string              `json:"transport,omitempty"`
+	Destination         string              `json:"destination,omitempty"`
+	InferenceBasis      string              `json:"inferenceBasis,omitempty"`
+	InferenceConfidence string              `json:"inferenceConfidence,omitempty"`
+	Hops                []ObservedHop       `json:"hops"`
+	Gaps                []string            `json:"gaps"`
+	Collection          *ProbeCollection    `json:"collection,omitempty"`
+	AttemptGroups       []ProbeAttemptGroup `json:"attemptGroups,omitempty"`
+}
+
+// ProbeCollection describes a bounded observation window, not all internal traffic.
+type ProbeCollection struct {
+	State       string   `json:"state"`
+	CompletedAt string   `json:"completedAt,omitempty"`
+	Reasons     []string `json:"reasons,omitempty"`
+}
+
+type ProbeRedirectSummary struct {
+	ObservedRedirects int    `json:"observedRedirects"`
+	LinkedRedirects   int    `json:"linkedRedirects"`
+	ProcessState      string `json:"processState"`
+}
+
+type ProbeAttemptGroup struct {
+	ID                   string             `json:"id"`
+	RuntimeSource        string             `json:"runtimeSource,omitempty"`
+	HopIDs               []string           `json:"hopIDs"`
+	RelationState        string             `json:"relationState"`
+	OrderBasis           string             `json:"orderBasis"`
+	Links                []ProbeAttemptLink `json:"links,omitempty"`
+	TerminalCandidateIDs []string           `json:"terminalCandidateIDs,omitempty"`
+	LocalTerminalHopID   string             `json:"localTerminalHopID,omitempty"`
+	Gaps                 []string           `json:"gaps"`
+}
+
+type ProbeAttemptLink struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+type AIRoutingSummary struct {
+	Provider      string `json:"provider,omitempty"`
+	RequestModel  string `json:"requestModel,omitempty"`
+	UpstreamModel string `json:"upstreamModel,omitempty"`
+	ResponseModel string `json:"responseModel,omitempty"`
 }
 
 type ObservedHop struct {
+	ID                        string               `json:"id,omitempty"`
+	RuntimeSource             string               `json:"runtimeSource,omitempty"`
+	LogSourceID               string               `json:"logSourceID,omitempty"`
+	LogSequence               int                  `json:"logSequence,omitempty"`
+	RequestStartTime          string               `json:"requestStartTime,omitempty"`
+	InternalRedirect          bool                 `json:"internalRedirect,omitempty"`
+	AIRouting                 *AIRoutingSummary    `json:"aiRouting,omitempty"`
 	ObservedAt                string               `json:"observedAt"`
 	ClusterID                 string               `json:"clusterID"`
 	Pod                       string               `json:"pod"`
@@ -296,6 +346,7 @@ type ObservedHop struct {
 	UpstreamHost              string               `json:"upstreamHost,omitempty"`
 	UpstreamLocalAddress      string               `json:"upstreamLocalAddress,omitempty"`
 	DownstreamRemoteAddress   string               `json:"downstreamRemoteAddress,omitempty"`
+	DownstreamLocalAddress    string               `json:"downstreamLocalAddress,omitempty"`
 	ResponseCode              int                  `json:"responseCode,omitempty"`
 	ResponseFlags             string               `json:"responseFlags,omitempty"`
 	ResponseCodeDetails       string               `json:"responseCodeDetails,omitempty"`

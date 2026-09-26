@@ -326,6 +326,35 @@ tbody tr:hover { background: #f8fbfa; }
 .probe-summary h2 { margin: 3px 0; font-size: 17px; }
 .probe-summary p { margin: 0; color: var(--muted); font-size: 10px; }
 .probe-summary > svg { color: #287267; }
+.probe-summary.request-error > svg { color: #b45245; }
+.probe-summary.request-error { background: #fff8f5; }
+.probe-summary.request-unknown { background: #f5f7f6; }
+.probe-summary.request-unknown > svg { color: #62756e; }
+.redirect-badge { display: inline-flex; align-items: center; gap: 5px; margin: 8px 0 3px; padding: 4px 7px; border-radius: 4px; color: #865327; background: #fff0da; font-size: 11px; font-weight: 650; }
+.probe-summary .probe-process-state { margin-top: 5px; color: #667773; }
+.attempt-group { margin: 10px; border: 1px solid #dbe5e1; border-radius: 5px; overflow: hidden; }
+.attempt-group > summary { padding: 10px; cursor: pointer; background: #f3f7f5; font-size: 11px; }
+.attempt-group > summary strong { margin-right: 8px; overflow-wrap: anywhere; }
+.attempt-group > summary span { color: #62756e; font-size: 10px; }
+.attempt-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.attempt-heading > div { min-width: 0; }
+.attempt-heading strong { overflow-wrap: anywhere; }
+.attempt-status { flex-shrink: 0; border-radius: 4px; padding: 4px 6px; font-size: 10px; color: #2c6b57; background: #eaf5ed; }
+.attempt-status.is-error { color: #a34838; background: #fff0ea; }
+.attempt-status.is-unknown { color: #62756e; background: #edf1ef; }
+.attempt-redirect { border-left: 3px solid #c18c43; }
+.attempt-error { border-left: 3px solid #c27364; }
+.attempt-details > summary { margin-top: 10px; color: #426e61; font-size: 10px; cursor: pointer; }
+.attempt-details > summary:focus-visible, .attempt-group > summary:focus-visible { outline: 2px solid #338168; outline-offset: -2px; }
+.attempt-connection { display: flex; align-items: center; gap: 6px; padding: 8px 12px; color: #8a622f; background: #fff9ed; font-size: 10px; }
+.attempt-gap { margin: 8px 11px; color: #8c5e34; font-size: 10px; overflow-wrap: anywhere; }
+.attempt-details dd { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .attempt-heading { flex-direction: column; }
+  .attempt-status { flex-shrink: 1; }
+  .segment-event .attempt-details dl { grid-template-columns: minmax(0, 1fr); }
+  .attempt-group > summary span { display: block; margin: 5px 0 0 12px; }
+}
 .probe-identifiers { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #fbfcfc; }
 .probe-identifiers code { min-width: 0; overflow-wrap: anywhere; color: #426763; font-size: 9px; }
 .snapshot-consistency { margin-left: auto; padding: 3px 6px; border-radius: 3px; color: #45605d; background: #edf2f1; font-size: 8px; font-weight: 800; text-transform: uppercase; }

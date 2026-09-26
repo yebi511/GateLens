@@ -15,6 +15,7 @@ type higressAccessLog struct {
 	AILog                             string          `json:"ai_log"`
 	Authority                         string          `json:"authority"`
 	DownstreamRemoteAddress           string          `json:"downstream_remote_address"`
+	DownstreamLocalAddress            string          `json:"downstream_local_address"`
 	Duration                          accessLogScalar `json:"duration"`
 	Method                            string          `json:"method"`
 	Path                              string          `json:"path"`
@@ -119,19 +120,24 @@ func ParseHigressLineForProbe(line, probeID, traceID, clusterID, pod, source str
 	}
 	var rawFields map[string]json.RawMessage
 	_ = json.Unmarshal([]byte(line), &rawFields)
+	if _, usageRecord := rawFields["ai_usage_record"]; usageRecord {
+		return domain.ObservedHop{}, false, nil
+	}
 	correlation := ""
-	loggedProbeID := strings.TrimSpace(entry.GateLensProbeID)
+	loggedProbeID := validLogValue(entry.GateLensProbeID)
 	if loggedProbeID != "" {
-		if loggedProbeID == probeID {
+		if validLogValue(probeID) != "" && loggedProbeID == probeID {
 			correlation = "probe-id"
 		}
-	} else if traceID != "" && strings.EqualFold(strings.TrimSpace(entry.TraceID), strings.TrimSpace(traceID)) {
+	} else if validLogValue(traceID) != "" && validLogValue(entry.TraceID) != "" && strings.EqualFold(strings.TrimSpace(entry.TraceID), strings.TrimSpace(traceID)) {
 		correlation = "trace-id"
 	}
 	if correlation == "" {
 		return domain.ObservedHop{}, false, nil
 	}
 	hop := domain.ObservedHop{
+		RequestStartTime: validLogValue(entry.StartTime), InternalRedirect: IsInternalRedirect(entry.ResponseCodeDetails),
+		AIRouting: parseAIRouting(entry.AILog), DownstreamLocalAddress: entry.DownstreamLocalAddress,
 		ObservedAt: entry.StartTime, ClusterID: clusterID, Pod: pod,
 		Authority: entry.Authority, Method: entry.Method, Path: redactQuery(entry.Path), Protocol: entry.Protocol,
 		RouteName: entry.RouteName, UpstreamCluster: entry.UpstreamCluster, UpstreamHost: entry.UpstreamHost,
@@ -148,6 +154,43 @@ func ParseHigressLineForProbe(line, probeID, traceID, clusterID, pod, source str
 		hop.ObservedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	return hop, true, nil
+}
+
+func validLogValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "-" {
+		return ""
+	}
+	return value
+}
+
+// IsInternalRedirect recognizes the core marker and bounded extension details.
+func IsInternalRedirect(details string) bool {
+	details = strings.TrimSpace(details)
+	return details == "internal_redirect" || (strings.HasPrefix(details, "internal_redirect:") && strings.TrimSpace(strings.TrimPrefix(details, "internal_redirect:")) != "")
+}
+
+func parseAIRouting(value string) *domain.AIRoutingSummary {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(value), &fields) != nil || fields == nil {
+		return nil
+	}
+	read := func(key string) string {
+		var value string
+		if json.Unmarshal(fields[key], &value) != nil {
+			return ""
+		}
+		runes := []rune(value)
+		if len(runes) > 1024 {
+			value = string(runes[:1024])
+		}
+		return value
+	}
+	summary := &domain.AIRoutingSummary{Provider: read("provider"), RequestModel: read("request_model"), UpstreamModel: read("upstream_model"), ResponseModel: read("response_model")}
+	if *summary == (domain.AIRoutingSummary{}) {
+		return nil
+	}
+	return summary
 }
 
 // parseExtProcObservations accepts the default ext_proc object, named objects

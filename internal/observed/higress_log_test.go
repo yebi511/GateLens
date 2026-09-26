@@ -1,6 +1,74 @@
 package observed
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestRedirectMarkerBoundaries(t *testing.T) {
+	for _, details := range []string{"internal_redirect", " internal_redirect ", "internal_redirect:ai_usage_via_upstream", "internal_redirect:other_filter_detail"} {
+		if !IsInternalRedirect(details) {
+			t.Errorf("missing marker %q", details)
+		}
+	}
+	for _, details := range []string{"via_upstream", "ai_usage_via_upstream", "not_internal_redirect", "internal_redirect_failed", "internal_redirect:", "internal_redirect:  "} {
+		if IsInternalRedirect(details) {
+			t.Errorf("false marker %q", details)
+		}
+	}
+}
+
+func TestProbePlaceholderIdentity(t *testing.T) {
+	for _, test := range []struct {
+		probe, trace string
+		match        bool
+		basis        string
+	}{
+		{"-", "TRACE", true, "trace-id"}, {" ", "TRACE", true, "trace-id"},
+		{"-", "-", false, ""}, {"other", "TRACE", false, ""}, {"probe", "-", true, "probe-id"},
+	} {
+		line, _ := json.Marshal(map[string]string{"gatelens_probe_id": test.probe, "trace_id": test.trace, "request_id": "probe"})
+		hop, matched, err := ParseHigressLineForProbe(string(line), "probe", "trace", "edge", "pod", "source")
+		if err != nil || matched != test.match || hop.Correlation != test.basis {
+			t.Fatalf("test=%+v hop=%+v match=%v err=%v", test, hop, matched, err)
+		}
+	}
+	if _, match, _ := ParseHigressLineForProbe(`{"gatelens_probe_id":"-","trace_id":"-"}`, "-", "-", "edge", "pod", "source"); match {
+		t.Fatal("placeholder command matched")
+	}
+}
+
+func TestAIRoutingSummaryDoesNotAffectObservation(t *testing.T) {
+	for _, value := range []string{"", "model:qwen", "{", "[]", "null", `{"provider":5}`} {
+		line, _ := json.Marshal(map[string]string{"gatelens_probe_id": "probe", "ai_log": value, "route_name": "chat", "response_code_details": "internal_redirect", "start_time": "-"})
+		hop, matched, err := ParseHigressLineForProbe(string(line), "probe", "", "edge", "pod", "source")
+		if err != nil || !matched || !hop.InternalRedirect || hop.RouteName != "chat" || hop.AIRouting != nil || hop.RequestStartTime != "" {
+			t.Fatalf("value=%q hop=%+v", value, hop)
+		}
+	}
+	line, _ := json.Marshal(map[string]string{"gatelens_probe_id": "probe", "ai_log": `{"provider":"sail","request_model":"Qwen3.6","upstream_model":"Qwen3.5","response_model":"Qwen3.5","question":"secret question","answer_no_stream":"secret answer","nested":{"key":"secret"}}`})
+	hop, matched, _ := ParseHigressLineForProbe(string(line), "probe", "", "edge", "pod", "source")
+	if !matched || hop.AIRouting == nil || hop.AIRouting.Provider != "sail" || hop.AIRouting.UpstreamModel != "Qwen3.5" {
+		t.Fatalf("hop=%+v", hop)
+	}
+	encoded, _ := json.Marshal(hop.AIRouting)
+	var fields map[string]any
+	_ = json.Unmarshal(encoded, &fields)
+	if len(fields) != 4 {
+		t.Fatalf("unexpected summary %s", encoded)
+	}
+}
+
+func TestUsageRecordsAreNotAccessAttempts(t *testing.T) {
+	content := `{"gatelens_probe_id":"probe","ai_usage_record":{"outcome":"complete"}}
+{"gatelens_probe_id":"probe","route_name":"first","response_code":400,"response_code_details":"internal_redirect:ai_usage_via_upstream"}
+{"gatelens_probe_id":"probe","ai_usage_record":{"outcome":"complete","total_token":769}}
+{"gatelens_probe_id":"probe","route_name":"second","response_code":200,"response_code_details":"ai_usage_via_upstream"}`
+	hops, _ := ParseHigressLinesForProbe(content, "probe", "", "edge", "pod", "source")
+	if len(hops) != 2 || !hops[0].InternalRedirect || hops[1].InternalRedirect {
+		t.Fatalf("hops=%+v", hops)
+	}
+}
 
 func TestParseHigressLine(t *testing.T) {
 	line := `2026-08-13T10:00:00Z stdout F {"ai_log":"model:qwen","authority":"api.example.com","duration":"17","method":"POST","path":"/v1/chat?token=secret","protocol":"HTTP/2","gatelens_probe_id":"probe-1","request_id":"envoy-generated","response_code":"200","response_flags":"-","route_name":"chat","start_time":"2026-08-13T10:00:00.000Z","trace_id":"trace","upstream_cluster":"outbound|8000||qwen.default.svc.cluster.local","upstream_host":"10.0.0.8:8000","upstream_service_time":"15","response_code_details":"via_upstream"}`

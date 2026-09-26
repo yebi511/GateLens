@@ -1,7 +1,6 @@
 package kube
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -12,11 +11,7 @@ import (
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/gatelens/gatelens/internal/domain"
-	"github.com/gatelens/gatelens/internal/observed"
 )
 
 const (
@@ -90,22 +85,8 @@ func (s *Store) ExecuteProbe(ctx context.Context, command domain.ProbeCommand) (
 
 	// Access logs are written when the HTTP stream completes. Give the container
 	// runtime a short bounded interval to make the record available.
-	var logErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		result.Hops, result.LogSource, logErr = s.collectProbeLogs(ctx, runtime, started.Add(-time.Second), fileOffset, command.ProbeID, command.TraceID)
-		if len(result.Hops) > 0 || logErr != nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			logErr = ctx.Err()
-			attempt = 5
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-	if logErr != nil {
-		result.Gaps = append(result.Gaps, logErr.Error())
-	}
+	result.Hops, result.LogSource, result.Collection = s.observeProbeWindow(ctx, runtime, started.Add(-time.Second), fileOffset, command.ProbeID, command.TraceID, 2*time.Second)
+	result.Gaps = append(result.Gaps, result.Collection.Reasons...)
 	if len(result.Hops) == 0 {
 		result.Gaps = append(result.Gaps, "未找到匹配 gatelens_probe_id 或 trace_id 的 Higress JSON 访问日志")
 	}
@@ -138,22 +119,8 @@ func (s *Store) ObserveProbe(ctx context.Context, command domain.ProbeCommand) (
 	if parsed, parseErr := time.Parse(time.RFC3339Nano, command.StartedAt); parseErr == nil {
 		since = parsed.Add(-time.Second)
 	}
-	var logErr error
-	for attempt := 0; attempt < 8; attempt++ {
-		result.Hops, result.LogSource, logErr = s.collectProbeLogs(ctx, runtime, since, 0, command.ProbeID, command.TraceID)
-		if len(result.Hops) > 0 || logErr != nil {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			logErr = ctx.Err()
-			attempt = 8
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
-	if logErr != nil {
-		result.Gaps = append(result.Gaps, logErr.Error())
-	}
+	result.Hops, result.LogSource, result.Collection = s.observeProbeWindow(ctx, runtime, since, 0, command.ProbeID, command.TraceID, 4*time.Second)
+	result.Gaps = append(result.Gaps, result.Collection.Reasons...)
 	if len(result.Hops) == 0 {
 		result.Gaps = append(result.Gaps, "未找到匹配 gatelens_probe_id 或 trace_id 的网关访问日志")
 	}
@@ -202,62 +169,4 @@ func (s *Store) probeGatewayRuntime(gatewayID string) (gatewayRuntime, error) {
 		return gatewayRuntime{}, fmt.Errorf("Gateway %q 没有 Ready Pod", gatewayID)
 	}
 	return runtime, nil
-}
-
-func (s *Store) collectProbeLogs(ctx context.Context, runtime gatewayRuntime, since time.Time, fileOffset int64, probeID, traceID string) ([]domain.ObservedHop, string, error) {
-	if s.probeLogFile != "" {
-		file, err := os.Open(s.probeLogFile)
-		if err != nil {
-			return nil, "file:" + s.probeLogFile, fmt.Errorf("读取访问日志文件 %q: %w", s.probeLogFile, err)
-		}
-		defer file.Close()
-		if info, statErr := file.Stat(); statErr == nil {
-			if info.Size() < fileOffset {
-				fileOffset = 0
-			}
-			// Remote observers do not know the pre-request offset. Read a bounded
-			// tail; probe IDs are unique, so older records cannot collide.
-			if fileOffset == 0 && info.Size() > maxProbeLogBytes {
-				fileOffset = info.Size() - maxProbeLogBytes
-			}
-		}
-		if _, err := file.Seek(fileOffset, io.SeekStart); err != nil {
-			return nil, "file:" + s.probeLogFile, fmt.Errorf("定位访问日志文件 %q: %w", s.probeLogFile, err)
-		}
-		content, err := io.ReadAll(io.LimitReader(file, maxProbeLogBytes+1))
-		if err != nil {
-			return nil, "file:" + s.probeLogFile, fmt.Errorf("读取访问日志文件 %q: %w", s.probeLogFile, err)
-		}
-		if len(content) > maxProbeLogBytes {
-			return nil, "file:" + s.probeLogFile, fmt.Errorf("访问日志增量超过 %d bytes", maxProbeLogBytes)
-		}
-		hops, _ := observed.ParseHigressLinesForProbe(string(content), probeID, traceID, s.clusterID, "", "file:"+s.probeLogFile)
-		return hops, "file:" + s.probeLogFile, nil
-	}
-	var hops []domain.ObservedHop
-	var errors []string
-	for _, pod := range runtime.Pods {
-		options := &corev1.PodLogOptions{Container: pod.Container, SinceTime: &metav1.Time{Time: since}, Timestamps: false}
-		stream, err := s.core.CoreV1().Pods(pod.Namespace).GetLogs(pod.Name, options).Stream(ctx)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("%s/%s: %v", pod.Namespace, pod.Name, err))
-			continue
-		}
-		content, readErr := io.ReadAll(io.LimitReader(stream, maxProbeLogBytes+1))
-		_ = stream.Close()
-		if readErr != nil {
-			errors = append(errors, fmt.Sprintf("%s/%s: %v", pod.Namespace, pod.Name, readErr))
-			continue
-		}
-		if len(content) > maxProbeLogBytes {
-			errors = append(errors, fmt.Sprintf("%s/%s: 日志窗口超过 %d bytes", pod.Namespace, pod.Name, maxProbeLogBytes))
-			content = content[:maxProbeLogBytes]
-		}
-		matched, _ := observed.ParseHigressLinesForProbe(string(bytes.TrimSpace(content)), probeID, traceID, s.clusterID, pod.Namespace+"/"+pod.Name, "kubernetes-pod-log")
-		hops = append(hops, matched...)
-	}
-	if len(errors) > 0 && len(hops) == 0 {
-		return nil, "kubernetes-pod-log", fmt.Errorf("读取 Gateway Pod 日志失败: %s", strings.Join(errors, "; "))
-	}
-	return hops, "kubernetes-pod-log", nil
 }

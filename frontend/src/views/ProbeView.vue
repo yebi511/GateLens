@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, Clock3, LoaderCircle, RadioTower, Server, 
 import { api } from '../api/client'
 import type { ExtProcObservation, ObservedHop, ProbeExecution, ProbeSegment, Topology, TopologyNode } from '../types'
 import { formatCSTDateTime } from '../utils/dateTime'
+import { collectionLabel, displayAttemptGroups, finalUpstreamRecord, hasLogValue, probeSegments, probeSummary } from '../utils/probePresentation'
 
 const props = defineProps<{ topology: Topology; clusterId: string }>()
 const emit = defineEmits<{ error: [message: string] }>()
@@ -16,20 +17,13 @@ const apiKeyInput = ref<HTMLInputElement | null>(null)
 const result = ref<ProbeExecution | null>(null)
 const loading = ref(false)
 let restoringDraft = false
-const segments = computed<ProbeSegment[]>(() => {
-  if (!result.value) return []
-  if (result.value.segments.length) return result.value.segments
-  return [{
-    index: 1,
-    clusterID: result.value.sourceCluster,
-    gatewayID: result.value.gatewayID,
-    state: result.value.hops.length ? 'observed' : 'missing',
-    evidence: result.value.hops.length ? 'observed' : 'inferred',
-    logSource: result.value.logSource,
-    hops: result.value.hops,
-    gaps: result.value.gaps,
-  }]
-})
+const segments = computed<ProbeSegment[]>(() => result.value ? probeSegments(result.value) : [])
+const summary = computed(() => result.value ? probeSummary(result.value) : undefined)
+function attemptGroups(segment: ProbeSegment) { return result.value ? displayAttemptGroups(segment, result.value) : [] }
+function segmentOnlyGaps(segment: ProbeSegment) {
+  const grouped = new Set(segment.attemptGroups?.flatMap((group) => group.gaps) ?? [])
+  return segment.gaps.filter((gap) => !grouped.has(gap))
+}
 
 function evidenceLabel(segment: ProbeSegment) {
   if (segment.evidence === 'observed') return 'Observed'
@@ -42,7 +36,7 @@ function evidenceLabel(segment: ProbeSegment) {
 }
 
 function segmentTitle(segment: ProbeSegment) {
-	if (segment.evidence === 'observed') return `第 ${segment.index} 跳`
+	if (segment.evidence === 'observed') return `网关段 ${segment.index}`
 	if (segment.inferenceBasis) return '候选下一跳'
 	return '网关证据缺口'
 }
@@ -187,7 +181,7 @@ function externalTargetLabel(target: TopologyNode) {
 
 function finalUpstreamTitle(hop: ObservedHop, resolved: ResolvedUpstream) {
   if (resolved.podName) return `${resolved.podNamespace}/${resolved.podName}`
-  return hop.upstreamHost || '上游未记录'
+  return hasLogValue(hop.upstreamHost) ? hop.upstreamHost : '实际地址未记录'
 }
 
 function finalUpstreamKind(resolved: ResolvedUpstream) {
@@ -213,7 +207,7 @@ function gatewaySnapshotNode(segment: ProbeSegment) {
   return matches.length === 1 ? matches[0] : undefined
 }
 
-const finalHop = computed(() => result.value?.hops[result.value.hops.length - 1])
+const finalHop = computed(() => result.value ? finalUpstreamRecord(result.value) : undefined)
 const finalUpstream = computed(() => finalHop.value ? resolveUpstream(finalHop.value) : {})
 
 function draftStorageKey(clusterID: string) {
@@ -347,9 +341,9 @@ async function submit() {
       <section class="probe-results">
         <div v-if="loading" class="empty-detail large"><LoaderCircle :size="28" class="spin" /><h2>等待网关完成请求</h2><p>源 Agent 正在发送一次请求，各集群 Agent 同步收集匹配的访问日志。</p></div>
         <template v-else-if="result">
-          <header class="probe-summary">
-            <div><p class="eyebrow">{{ result.evidenceComplete ? 'Observed' : 'Partial' }}</p><h2>{{ result.state === 'completed' ? `HTTP ${result.responseCode || '-'}` : '探测失败' }}</h2><p>{{ formatCSTDateTime(result.completedAt || result.startedAt) }} · {{ result.durationMillis }} ms · {{ segments.length }} 个网关段</p></div>
-            <CheckCircle2 v-if="result.evidenceComplete" :size="24" aria-hidden="true" /><AlertTriangle v-else :size="24" aria-hidden="true" />
+          <header class="probe-summary" :class="`request-${summary?.requestState}`">
+            <div><p class="eyebrow">{{ result.evidenceComplete ? '已关联网关日志' : '网关日志存在证据缺口' }}</p><h2>{{ summary?.requestLabel }}</h2><p>{{ formatCSTDateTime(result.completedAt || result.startedAt) }} · Agent 实测总耗时 {{ result.durationMillis }} ms</p><p>{{ summary?.observedGateways }} 个已观测网关 · {{ summary?.recordCount }} 条访问记录<template v-if="summary?.candidateGateways"> · {{ summary.candidateGateways }} 个候选网关</template></p><span v-if="summary?.redirects" class="redirect-badge"><AlertTriangle :size="13" aria-hidden="true" />发生内部重定向 · {{ summary.redirects }} 次已观测</span><p class="probe-process-state">{{ summary?.processLabel }}</p></div>
+            <CheckCircle2 v-if="summary?.successful" :size="24" aria-hidden="true" /><AlertTriangle v-else :size="24" aria-hidden="true" />
           </header>
           <div class="probe-identifiers"><code>probe {{ result.id }}</code><code>trace {{ result.traceID }}</code><span v-if="result.snapshotConsistency" class="snapshot-consistency" :class="`is-${result.snapshotConsistency}`">{{ result.snapshotConsistency }}</span></div>
           <div class="observed-path">
@@ -362,8 +356,16 @@ async function submit() {
               </header>
               <div v-if="segment.transport || segment.destination" class="transit-boundary"><span>{{ segment.transport || '跨集群' }}</span><code>{{ segment.destination || '远端入口' }}</code></div>
 			  <div v-if="segment.inferenceBasis" class="segment-inference"><strong>推断依据</strong><span>{{ segment.inferenceBasis }}</span></div>
-              <article v-for="(hop, index) in segment.hops" :key="`${hop.pod}-${hop.observedAt}-${index}`" class="segment-event">
-                <div><strong>{{ hop.routeName || '未命名 Route' }}</strong><p>{{ hop.pod || segment.gatewayName }} · {{ hop.authority }}{{ hop.path }}</p><dl><div><dt>上游 Cluster</dt><dd>{{ hop.upstreamCluster || '-' }}</dd></div><div><dt>实际上游地址</dt><dd>{{ hop.upstreamHost || '-' }}</dd></div><div v-if="resolveUpstream(hop).registry"><dt>McpBridge Registry</dt><dd>{{ registryLabel(resolveUpstream(hop)) }}</dd></div><div v-if="resolveUpstream(hop).resolutionAmbiguous"><dt>Registry 解析</dt><dd class="text-warning">同域名对应多个 Registry 或解析目标，无法唯一确认</dd></div><div v-else-if="resolveUpstream(hop).externalTarget"><dt>Registry 解析目标</dt><dd>{{ externalTargetLabel(resolveUpstream(hop).externalTarget!) }}</dd></div><div v-if="resolveUpstream(hop).service"><dt>上游 Service</dt><dd>{{ resolveUpstream(hop).service?.namespace }}/{{ resolveUpstream(hop).service?.name }}</dd></div><div v-if="resolveUpstream(hop).podName"><dt>实际上游 Pod</dt><dd>{{ resolveUpstream(hop).podNamespace }}/{{ resolveUpstream(hop).podName }}</dd></div><div><dt>上游响应</dt><dd>HTTP {{ hop.responseCode || '-' }} · {{ hop.durationMillis }} ms</dd></div><div v-if="resolveUpstream(hop).endpoint"><dt>实际 Endpoint 快照</dt><dd :class="`text-${resolveUpstream(hop).endpoint?.status}`">{{ resolveUpstream(hop).endpoint?.statusText }}</dd></div><div v-else-if="resolveUpstream(hop).service"><dt>Registry Service 快照</dt><dd :class="`text-${resolveUpstream(hop).service?.status}`">{{ resolveUpstream(hop).service?.statusText }}</dd></div><div v-else-if="resolveUpstream(hop).externalTarget"><dt>Registry 目标快照</dt><dd :class="`text-${resolveUpstream(hop).externalTarget?.status}`">{{ resolveUpstream(hop).externalTarget?.statusText }}</dd></div><div v-if="hop.responseFlags && hop.responseFlags !== '-'"><dt>响应标志</dt><dd>{{ hop.responseFlags }}</dd></div><div v-if="hop.responseCodeDetails"><dt>响应详情</dt><dd>{{ hop.responseCodeDetails }}</dd></div><div v-if="hop.upstreamTransportFailureReason"><dt>传输失败</dt><dd>{{ hop.upstreamTransportFailureReason }}</dd></div><div v-if="hop.aiLog"><dt>AI log</dt><dd>{{ hop.aiLog }}</dd></div></dl>
+              <details v-for="group in attemptGroups(segment)" :key="group.id" class="attempt-group" :open="group.defaultOpen">
+                <summary><strong>{{ group.title }} · {{ group.records.length }} 条记录</strong><span>{{ group.relationLabel }}</span></summary>
+                <p v-for="gap in group.gaps" :key="gap" class="attempt-gap">{{ gap }}</p>
+                <template v-for="record in group.records" :key="record.key">
+              <article class="segment-event" :class="record.redirect ? 'attempt-redirect' : (record.hop.responseCode || 0) >= 400 ? 'attempt-error' : 'attempt-terminal'">
+                <header class="attempt-heading"><div><p>{{ record.title }}<template v-if="record.hop.aiRouting?.provider"> · {{ record.hop.aiRouting.provider }}</template><template v-if="record.hop.aiRouting?.upstreamModel"> / {{ record.hop.aiRouting.upstreamModel }}</template></p><strong>{{ record.hop.routeName || '未命名 Route' }}</strong></div><span class="attempt-status" :class="!record.hop.responseCode ? 'is-unknown' : record.hop.responseCode >= 400 ? 'is-error' : 'is-success'">HTTP {{ record.hop.responseCode || '-' }} · {{ record.role }}</span></header>
+                <details class="attempt-details"><summary>查看访问证据详情</summary>
+                <div v-for="hop in [record.hop]" :key="record.key"><p>{{ hop.pod || segment.gatewayName }} · {{ hop.authority }}{{ hop.path }}</p>
+                <dl class="attempt-ai-routing" v-if="hop.aiRouting"><div v-if="hop.aiRouting.provider"><dt>Provider</dt><dd>{{ hop.aiRouting.provider }}</dd></div><div v-if="hop.aiRouting.requestModel"><dt>请求模型</dt><dd>{{ hop.aiRouting.requestModel }}</dd></div><div v-if="hop.aiRouting.upstreamModel"><dt>上游模型</dt><dd>{{ hop.aiRouting.upstreamModel }}</dd></div><div v-if="hop.aiRouting.responseModel"><dt>响应模型</dt><dd>{{ hop.aiRouting.responseModel }}</dd></div></dl>
+                <dl><div><dt>上游 Cluster</dt><dd>{{ hop.upstreamCluster || '-' }}</dd></div><div><dt>实际上游地址</dt><dd>{{ hasLogValue(hop.upstreamHost) ? hop.upstreamHost : '实际地址未记录' }}</dd></div><div v-if="resolveUpstream(hop).registry"><dt>McpBridge Registry</dt><dd>{{ registryLabel(resolveUpstream(hop)) }}</dd></div><div v-if="resolveUpstream(hop).resolutionAmbiguous"><dt>Registry 解析</dt><dd class="text-warning">同域名对应多个 Registry 或解析目标，无法唯一确认</dd></div><div v-else-if="resolveUpstream(hop).externalTarget"><dt>Registry 解析目标</dt><dd>{{ externalTargetLabel(resolveUpstream(hop).externalTarget!) }}</dd></div><div v-if="resolveUpstream(hop).service"><dt>上游 Service</dt><dd>{{ resolveUpstream(hop).service?.namespace }}/{{ resolveUpstream(hop).service?.name }}</dd></div><div v-if="resolveUpstream(hop).podName"><dt>实际上游 Pod</dt><dd>{{ resolveUpstream(hop).podNamespace }}/{{ resolveUpstream(hop).podName }}</dd></div><div><dt>日志响应码</dt><dd>HTTP {{ hop.responseCode || '-' }} · {{ record.role }}</dd></div><div><dt>日志 duration</dt><dd>{{ hop.durationMillis ?? '-' }} ms</dd></div><div><dt>上游服务耗时</dt><dd>{{ hop.upstreamServiceTimeMillis ?? '-' }} ms</dd></div><div><dt>关联依据</dt><dd>{{ hop.correlation === 'probe-id' ? 'Probe ID 精确匹配' : hop.correlation === 'trace-id' ? 'Trace ID 兜底匹配' : '关联依据未提供' }}</dd></div><div><dt>日志来源</dt><dd>{{ hop.evidenceSource || segment.logSource || '未提供' }}</dd></div><div v-if="resolveUpstream(hop).endpoint"><dt>实际 Endpoint 快照</dt><dd :class="`text-${resolveUpstream(hop).endpoint?.status}`">{{ resolveUpstream(hop).endpoint?.statusText }}</dd></div><div v-else-if="resolveUpstream(hop).service"><dt>Registry Service 快照</dt><dd :class="`text-${resolveUpstream(hop).service?.status}`">{{ resolveUpstream(hop).service?.statusText }}</dd></div><div v-else-if="resolveUpstream(hop).externalTarget"><dt>Registry 目标快照</dt><dd :class="`text-${resolveUpstream(hop).externalTarget?.status}`">{{ resolveUpstream(hop).externalTarget?.statusText }}</dd></div><div v-if="hop.responseFlags && hop.responseFlags !== '-'"><dt>响应标志</dt><dd>{{ hop.responseFlags }}</dd></div><div v-if="hop.responseCodeDetails"><dt>响应详情</dt><dd>{{ hop.responseCodeDetails }}</dd></div><div v-if="hop.upstreamTransportFailureReason && hop.upstreamTransportFailureReason !== '-'"><dt>传输失败</dt><dd>{{ hop.upstreamTransportFailureReason }}</dd></div></dl>
                   <section v-for="(extProc, extProcIndex) in hop.extProcs" :key="`${extProc.processor}-${extProcIndex}`" class="ext-proc-evidence" :class="`outcome-${extProc.outcome}`">
                     <header><strong>{{ extProc.processor || 'ext_proc' }}</strong><span>{{ extProcLabel(extProc) }}</span></header>
                     <dl>
@@ -379,11 +381,19 @@ async function submit() {
                   </section>
                   <p v-if="!hop.extProcs?.length" class="ext-proc-missing">未输出 ext_proc Filter State，无法证明本次请求是否调用 BBR/EPP。</p>
                 </div>
+                </details>
               </article>
+                <div v-if="record.redirectTo" class="attempt-connection"><Waypoints :size="14" aria-hidden="true" />内部重定向，继续下一次尝试</div>
+                <p v-else-if="record.redirect && !group.gaps.length" class="attempt-gap">已发生内部重定向，后续尝试关系未确认</p>
+                </template>
+              </details>
 			  <div v-if="!segment.hops.length" class="segment-empty"><AlertTriangle :size="15" /><span>{{ segment.gaps[0] || '该网关是下一跳候选，但没有本次请求的运行时证据。' }}</span></div>
               <p v-if="segment.logSource" class="segment-source">{{ segment.logSource }}</p>
+              <p class="segment-source">{{ collectionLabel(segment) }} · 不代表所有内部尝试均已输出日志</p>
+              <p v-for="gap in segmentOnlyGaps(segment)" :key="gap" class="attempt-gap">{{ gap }}</p>
             </section>
             <article v-if="finalHop" class="observed-hop endpoint-hop"><span><Server :size="17" /></span><div><strong>{{ finalUpstreamTitle(finalHop, finalUpstream) }}</strong><p><template v-if="finalUpstream.podName">{{ finalHop.upstreamHost }} · </template>{{ finalHop.upstreamCluster }}</p><p v-if="finalUpstream.registry">配置映射 · {{ registryResolutionLabel(finalUpstream) }}</p><p v-if="finalUpstream.resolutionAmbiguous" class="text-warning">Registry 解析有歧义</p></div><em>{{ finalUpstreamKind(finalUpstream) }}</em></article>
+            <article v-else class="observed-hop endpoint-hop"><span><Server :size="17" /></span><div><strong>最终上游归属未确认</strong><p>各网关的终止尝试候选保留在对应网关段内。</p></div><em>未知</em></article>
           </div>
           <div v-if="result.error || result.gaps.length" class="probe-gaps"><strong><Clock3 :size="15" />证据缺口</strong><p v-if="result.error">{{ result.error }}</p><p v-for="gap in result.gaps" :key="gap">{{ gap }}</p></div>
         </template>

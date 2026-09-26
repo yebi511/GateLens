@@ -1,6 +1,6 @@
 # 主动探测与实际流量路径观测设计
 
-> 实现状态（2026-08-21）：阶段 A 已实现，使用 Higress JSON 访问日志，不依赖 eBPF。当前覆盖源 Agent 发起一次 HTTP 请求、按联邦拓扑在多个已接入 Gateway 上只读采集同一 GateLens probe ID 或 trace ID、分段展示 Route/upstream、`ai_log`、一个或多个 ext_proc Filter State 和证据缺口；基于 Span 父子关系的分布式 Trace、Envoy 聚合指标连接器和 Hubble/eBPF 仍为后续工作。
+> 实现状态（2026-09-17）：阶段 A 已实现，使用 Higress JSON 访问日志，不依赖 eBPF。当前覆盖源 Agent 发起一次 HTTP 请求、多个已接入 Gateway 的只读日志采集、网关内内部重定向观察、固定 AI 路由摘要、一个或多个 ext_proc Filter State 和证据缺口；基于 Span 父子关系的分布式 Trace、Envoy 聚合指标连接器和 Hubble/eBPF 仍为后续工作。
 
 ## 0. 首版使用说明
 
@@ -62,7 +62,7 @@ response_code, response_flags, response_code_details, duration
 
 Agent 只注入 `X-GateLens-Probe-ID` 和 B3 trace header，不注入 `X-Request-ID`。跨多个网关时，必须确保路由、WasmPlugin、鉴权插件和 Header 改写规则不会删除或覆盖 `x-gatelens-probe-id`；每一跳都要输出同名 JSON 字段。
 
-`ai_log=%FILTER_STATE(wasm.ai_log:PLAIN)%` 是可选证据。GateLens 不解析或推测其业务语义，只原样展示非空结果。默认格式没有 ext_proc Filter State，因此 BBR/EPP 的调用阶段、gRPC 状态和内部选择理由不会自动出现。ext_proc 的具体追加方式见 [0.6](#06-bbrepp-与-ext_proc-边界)。
+`ai_log=%FILTER_STATE(wasm.ai_log:PLAIN)%` 是可选证据。GateLens 仅从 JSON 对象提取 `provider`、`request_model`、`upstream_model`、`response_model` 四个字符串字段作为路由摘要；格式错误不影响访问日志观察。旧 `aiLog` 字段保留兼容，但页面不默认展示完整日志中的问题和回答，也不根据 usage 的 `outcome` 或 `downstream_disconnected` 推断请求结果。默认格式没有 ext_proc Filter State，因此 BBR/EPP 的调用阶段、gRPC 状态和内部选择理由不会自动出现。ext_proc 的具体追加方式见 [0.6](#06-bbrepp-与-ext_proc-边界)。
 
 ### 0.3 部署 Agent
 
@@ -137,9 +137,9 @@ curl -X POST http://gatelens.example.com/api/v1/probes \
 3. Agent 经既有长轮询领取只包含 `entryID + path` 的 `probe-http` 命令，并再次用本地 Kubernetes 快照校验入口属于所选 Gateway；URL 由 Agent 自行构造。
 4. 文件日志模式先记录文件偏移；随后 Agent 发出请求，注入 `X-GateLens-Probe-ID` 和 `X-B3-TraceId`。
 5. 请求完成后，Agent 读取所有 Ready Gateway Pod 的短时间日志，或读取文件偏移后的新增内容。
-6. 解析器优先接受 `gatelens_probe_id` 与本次 probe ID 精确相等的 JSON 行；只有该字段为空时才使用精确相等的 `trace_id`。非空但不匹配的 `gatelens_probe_id` 会直接拒绝，不能被 trace ID 覆盖。命中后将 `route_name`、`upstream_cluster`、`upstream_host`、响应状态和 `ai_log` 标为 `Observed`；Path 的查询参数在保存前移除。
+6. 解析器优先接受有效 `gatelens_probe_id` 与本次 probe ID 精确相等的 JSON 行；空值、纯空白和 `-` 都视为未提供标识，此时才允许有效且匹配的 `trace_id` 兜底（忽略十六进制大小写）。有效但不匹配的 `gatelens_probe_id` 会直接拒绝，不能被 trace ID 覆盖。`request_id` 不参与关联。命中后将 `route_name`、`upstream_cluster`、`upstream_host`、响应状态和 AI 路由摘要标为 `Observed`；Path 的查询参数在保存前移除。
 7. 源请求完成后，Server 向所有已接入集群中关联了 Ready 数据面 Pod 的 Gateway 下发只读 `probe-observe` 命令，不依赖静态路由或跨集群边决定观测目标。同集群的第二个 Gateway 也会被检查；纯配置对象不会产生无效查询。
-8. 实际匹配 probe ID/trace ID 的 Gateway 显示为 `Observed` 后续网关段，并按日志时间排序。
+8. 实际匹配 probe ID/trace ID 的 Gateway 显示为 `Observed` 后续网关段，网关段沿用时间排序；网关内尝试使用同一日志源的记录顺序，不能用相同 `start_time` 去重或建立跨 Pod 因果关系。
 9. 对没有匹配日志的 Gateway，Server 通过可扩展的关联规则使用已观测 hop 的 `upstream_host` 和 `upstream_cluster` 反查网关入口：地址精确命中为高置信候选；Service DNS、Gateway `status.addresses` 或所属 Listener hostname 精确命中为中置信候选。Higress McpBridge 是首个配置链规则：它把 `.dns` 解释为 `<registry.name>.<registry.type>` 目标标识，而不是 Service 域名后缀；例如 `outbound|80||llm-inference-providers.internal.dns` 会先命中对应 Registry，再沿 `Registry -> Service` 配置关系映射到选择该 Service 的同集群 Gateway。后续其他资源关联只需增加规则；证据强度、去重和歧义处理由统一聚合器完成。若同一值匹配多个网关则标记为歧义候选。若只有跨集群配置边，则仅在该边的上一网关已经被观测时显示低置信配置候选，不越过缺失段继续推断。
 10. 候选网关明确显示为“候选下一跳”和证据 gap，不计作已观测路径。没有地址、Cluster 或直接配置关系的无关广播网关继续隐藏；日志读取错误也只在网关已被判定为候选时返回，避免全局广播产生无关告警。
 
@@ -224,6 +224,24 @@ EPP 继续使用 `envoy.filters.http.ext_proc`，避免破坏 InferencePool 控�
 推理服务无需修改日志。GateLens 使用同一条网关日志中的 `upstream_cluster`、`upstream_host`、`response_code`、`response_flags`、`response_code_details`、`upstream_service_time` 和 `upstream_transport_failure_reason` 展示选择结果与故障。这里的 `upstream_host` 证明 Envoy 选择或尝试了该地址；有上游响应码时才能证明上游返回了 HTTP 响应，不能据此断言模型业务语义成功。
 
 页面还会把处理器身份、selected pool 和 upstream 地址与同集群 Kubernetes 快照中的 BBR、EndpointPicker、InferencePool、Service 或 Endpoint 精确匹配，并显示该对象的快照健康状态。这是配置/Ready 辅助证据，不是本次请求证据；名称或地址不能唯一匹配时不显示，避免误关联。
+
+### 0.7 网关内内部重定向观察
+
+同一次请求可以在网关内部切换 Route、Provider 或模型。系统同时接受响应详情恰为 `internal_redirect`，或以 `internal_redirect:` 开头且后缀非空的标记，包括 `internal_redirect:ai_usage_via_upstream`、`internal_redirect:other_filter_detail`。普通 `via_upstream`、`ai_usage_via_upstream`、`internal_redirect_failed` 均不作为标记。不能仅凭 HTTP 400、模型切换或同 ID 多条日志推断 redirect；独立 `ai_usage_record` 不计访问尝试。
+
+标准 Envoy 的标记与自定义 filter 的详情存在差异，GateLens 不依赖固定 AI filter 后缀。接入时至少输出 `response_code_details`，建议同时保留 `start_time`、`downstream_remote_address` 与 `downstream_local_address`。历史日志如果 probe ID 与 trace ID 都为 `-`，即使 request ID 相同，也不会作为一次 GateLens 探测的证据。
+
+关联记录在所属网关段内按运行时、原始开始时间与下游连接分组，内部关系只使用同一来源的顺序。同 ID 在多个网关或 Pod 出现不直接形成内部 redirect 链；Provider、Route、模型和 cluster 变化不拆断已确认的同运行时尝试。时间相同不去重，缺失时间的展示回填不参与因果判断。
+
+采集累计缓存保留真实 occurrence，并为本次探测生成稳定记录 ID；重读同一快照不会增加数量，来源内两条内容相同的真实记录仍各自保留。文件轮转、截断或无法定位快照重叠会保留已有证据并报告来源连续性缺口。共享文件本身不能证明发出日志的 Pod/容器，文件模式保留记录，运行时关系和最终归属保持未确认。
+
+源请求结束后的采集窗口默认最多 2 秒，远端只读观察最多 4 秒，读取间隔 200 毫秒，稳定等待 500 毫秒。每次读取使用窗口剩余时间；命令 deadline 更早时提前停止。第一条 redirect 不会结束采集，唯一且无冲突的终止候选需要额外读取并稳定后才可结束。整个过程只多读日志，源 Agent 仍只发送一次 HTTP 请求，客户端不跟随外部 HTTP 3xx。
+
+新增 `collection` 状态为 `settled`、`window-ended`、`cancelled`、`read-error`、`unknown`。取消、读取失败或窗口结束都返回累计记录及缺口；`settled` 仅表示窗口内稳定，不保证未输出的内部尝试不存在。仅有 redirect 时增加“后续尝试记录缺失”缺口。旧 Agent 缺少采集和身份元数据时保持未知。
+
+Server 汇总已观测 redirect 标记数、已关联后继数及内部过程状态。`EvidenceComplete` 延续网关覆盖含义，不据此断言内部过程完整。Agent 实际响应码或错误不被日志覆盖；局部终止候选只有在稳定且无冲突时升级为网关终止尝试。源网关唯一运行时分组、精确 probe 关联、无缺口且状态码与 Agent 一致时才设置 `finalResponseHopID`；全请求只有一个网关段且无相关缺口时才设置 `finalUpstreamHopID`。多网关因缺少 Span 因果关系，最终上游保持未确认。
+
+页面区分 Agent 实测请求总耗时、日志 duration 和 upstream_service_time。共享开始时间的 440/8736 ms 不相加、不做差值推算。固定 AI 摘要提供可用 Provider 和模型；地址 `-` 显示未记录，配置映射不替代实际连接证据。联合样例与验收记录见 [内部重定向验收](12-probe-redirect-acceptance.md)。
 
 ## 1. 背景
 

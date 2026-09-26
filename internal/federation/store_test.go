@@ -525,7 +525,8 @@ func TestStoreProbeCollectsRemoteGatewayWithoutSendingAnotherRequest(t *testing.
 	sourceResult := domain.ProbeExecution{
 		ID: sourceCommand.Probe.ProbeID, TraceID: sourceCommand.Probe.TraceID,
 		SourceCluster: "edge", State: "completed", LogSource: "edge-log",
-		Hops: []domain.ObservedHop{{ObservedAt: now.Format(time.RFC3339Nano), ClusterID: "edge", RouteName: "to-gpu", Confidence: "observed"}}, EvidenceComplete: true,
+		ResponseCode: 200, Collection: &domain.ProbeCollection{State: "settled"},
+		Hops: []domain.ObservedHop{{ID: "record-1", ObservedAt: now.Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "edge/pod", LogSourceID: "edge/pod", LogSequence: 1, DownstreamRemoteAddress: "10.0.0.1:1234", Correlation: "probe-id", ResponseCode: 200, ResponseCodeDetails: "via_upstream", ClusterID: "edge", RouteName: "to-gpu", Confidence: "observed"}}, EvidenceComplete: true,
 	}
 	if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: sourceCommand.ID, ClusterID: "edge", Probe: &sourceResult}); err != nil {
 		t.Fatal(err)
@@ -541,7 +542,11 @@ func TestStoreProbeCollectsRemoteGatewayWithoutSendingAnotherRequest(t *testing.
 	remoteResult := domain.ProbeExecution{
 		ID: remoteCommand.Probe.ProbeID, TraceID: remoteCommand.Probe.TraceID,
 		SourceCluster: "gpu", State: "completed", LogSource: "gpu-log",
-		Hops: []domain.ObservedHop{{ObservedAt: now.Add(time.Millisecond).Format(time.RFC3339Nano), ClusterID: "gpu", RouteName: "model", Confidence: "observed"}}, EvidenceComplete: true,
+		Collection: &domain.ProbeCollection{State: "settled"},
+		Hops: []domain.ObservedHop{
+			{ID: "record-1", ObservedAt: now.Add(time.Millisecond).Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "gpu/pod", LogSourceID: "gpu/pod", LogSequence: 1, DownstreamRemoteAddress: "10.0.0.2:1234", Correlation: "probe-id", ResponseCode: 400, ResponseCodeDetails: "internal_redirect", ClusterID: "gpu", RouteName: "first-model", Confidence: "observed"},
+			{ID: "record-2", ObservedAt: now.Add(time.Millisecond).Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "gpu/pod", LogSourceID: "gpu/pod", LogSequence: 2, DownstreamRemoteAddress: "10.0.0.2:1234", Correlation: "probe-id", ResponseCode: 200, ResponseCodeDetails: "via_upstream", ClusterID: "gpu", RouteName: "model", Confidence: "observed"},
+		}, EvidenceComplete: true,
 	}
 	if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: remoteCommand.ID, ClusterID: "gpu", Probe: &remoteResult}); err != nil {
 		t.Fatal(err)
@@ -551,11 +556,14 @@ func TestStoreProbeCollectsRemoteGatewayWithoutSendingAnotherRequest(t *testing.
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if len(result.probe.Segments) != 2 || len(result.probe.Hops) != 2 || !result.probe.EvidenceComplete {
+	if len(result.probe.Segments) != 2 || len(result.probe.Hops) != 3 || !result.probe.EvidenceComplete {
 		t.Fatalf("probe=%#v", result.probe)
 	}
 	if result.probe.Segments[1].GatewayID != "gpu::gateway/gpu" || result.probe.Segments[1].Evidence != "observed" {
 		t.Fatalf("remote segment=%#v", result.probe.Segments[1])
+	}
+	if result.probe.Segments[1].Collection.State != "settled" || result.probe.RedirectSummary.ObservedRedirects != 1 || result.probe.RedirectSummary.LinkedRedirects != 1 || result.probe.FinalResponseHopID == "" || result.probe.FinalUpstreamHopID != "" {
+		t.Fatalf("attempt semantics=%+v", result.probe)
 	}
 }
 
