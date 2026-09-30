@@ -19,6 +19,7 @@ import {
 import StatusBadge from '../components/StatusBadge.vue'
 import type { GateLensContext, Topology, TopologyCluster, TopologyEdge, TopologyNode, ViewID } from '../types'
 import { formatCSTDateTime } from '../utils/dateTime'
+import { registryOwners, unresolvedIngressBridges, visibleTopologyEdges } from '../utils/registryTopology'
 
 const props = defineProps<{
   context: GateLensContext
@@ -74,9 +75,8 @@ const stages: Record<string, number> = {
   VirtualService: 2,
   BBR: 2,
   BodyBasedRouting: 2,
-  McpBridge: 3,
   InferencePool: 3,
-  Registry: 4,
+  Registry: 3,
   EPP: 4,
   EndpointPicker: 4,
   ExternalTarget: 5,
@@ -90,13 +90,13 @@ const stages: Record<string, number> = {
 const nodeCategories = [
   { id: 'entry', title: '网关入口', kinds: ['Gateway'] },
   { id: 'routing', title: '路由与策略', kinds: ['HTTPRoute', 'Ingress', 'VirtualService', 'BBR', 'BodyBasedRouting'] },
-  { id: 'backend', title: '后端抽象', kinds: ['McpBridge', 'InferencePool'] },
-  { id: 'discovery', title: '发现与调度', kinds: ['Registry', 'EPP', 'EndpointPicker'] },
+  { id: 'backend', title: '后端抽象', kinds: ['Registry', 'InferencePool'] },
+  { id: 'discovery', title: '发现与调度', kinds: ['EPP', 'EndpointPicker'] },
   { id: 'target', title: '服务目标', kinds: [] },
   { id: 'runtime', title: '运行实例', kinds: ['Endpoint', 'Pod'] },
 ]
-const knownKinds = new Set(nodeCategories.flatMap((category) => category.kinds))
-const hiddenKinds = new Set(['Listener'])
+const knownKinds = new Set([...nodeCategories.flatMap((category) => category.kinds), 'McpBridge'])
+const hiddenKinds = new Set(['Listener', 'McpBridge'])
 const routingKinds = new Set(['HTTPRoute', 'Ingress', 'VirtualService', 'BBR', 'BodyBasedRouting'])
 const boundaryRelationKinds = new Set(['attaches', 'routes', 'selects', 'transit'])
 const targetSourceKinds = new Set(
@@ -164,6 +164,21 @@ const displayEdges = computed(() => {
 })
 const clusterName = (id: string) => clusters.value.find((item) => item.id === id)?.name ?? id
 const currentNodes = computed(() => props.topology.nodes.filter((item) => item.clusterID === activeCluster.value.id))
+const registryOwnerByID = computed(() => registryOwners(props.topology.nodes, props.topology.edges))
+const registryChildrenByBridgeID = computed(() => {
+  const children = new Map<string, TopologyNode[]>()
+  for (const registry of props.topology.nodes) {
+    const bridge = registryOwnerByID.value.get(registry.id)
+    if (!bridge) continue
+    const siblings = children.get(bridge.id) ?? []
+    siblings.push(registry)
+    children.set(bridge.id, siblings)
+  }
+  return children
+})
+const unresolvedBridgesFor = (item: TopologyNode) => item.kind === 'Ingress'
+  ? unresolvedIngressBridges(item.id, props.topology.edges, props.topology.nodes, registryOwnerByID.value)
+  : []
 const gatewayReachableNodeIDs = computed(() => reachableNodeIDs(
   currentNodes.value.filter((item) => item.kind === 'Gateway').map((item) => item.id),
   'forward',
@@ -189,10 +204,21 @@ const visibleNodes = computed(() => {
     .filter((item) =>
       (!props.namespace || item.namespace === props.namespace) &&
       (!problemsOnly.value || item.status !== 'healthy') &&
-      (!query || `${item.name} ${item.kind} ${item.namespace}`.toLowerCase().includes(query)),
+      (!query || `${item.name} ${item.kind} ${item.namespace} ${registryOwnerByID.value.get(item.id)?.name ?? ''}`.toLowerCase().includes(query)),
     )
     .sort((left, right) => (stages[left.kind] ?? 99) - (stages[right.kind] ?? 99) || left.name.localeCompare(right.name))
 })
+const emptyBridges = computed(() => currentNodes.value.filter((item) => item.kind === 'McpBridge' &&
+  !(registryChildrenByBridgeID.value.get(item.id)?.length)))
+const visibleEmptyBridges = computed(() => {
+  const query = search.value.trim().toLowerCase()
+  return emptyBridges.value.filter((item) =>
+    (!props.namespace || item.namespace === props.namespace) &&
+    (!query || `${item.name} ${item.kind} ${item.namespace}`.toLowerCase().includes(query)),
+  )
+})
+const visibleNodeIDs = computed(() => new Set(visibleNodes.value.map((item) => item.id)))
+const topologyDisplayEdges = computed(() => visibleTopologyEdges(displayEdges.value, visibleNodeIDs.value))
 const targetNodeIDs = computed(() => {
   const result = new Set<string>()
   for (const edge of props.topology.edges) {
@@ -214,7 +240,11 @@ const groupedNodes = computed(() => {
   const otherNodes = visibleNodes.value.filter((item) => !knownKinds.has(item.kind) && !targetNodeIDs.value.has(item.id))
   return otherNodes.length ? [...groups, { id: 'other', title: '其他', kinds: [], nodes: otherNodes }] : groups
 })
-const selected = computed(() => visibleNodes.value.find((item) => item.id === selectedID.value) ?? null)
+const selected = computed(() => visibleNodes.value.find((item) => item.id === selectedID.value)
+  ?? currentNodes.value.find((item) => item.id === selectedID.value && item.kind === 'McpBridge') ?? null)
+const selectedRegistryIDs = computed(() => new Set(selected.value?.kind === 'McpBridge'
+  ? (registryChildrenByBridgeID.value.get(selected.value.id) ?? []).map((item) => item.id)
+  : []))
 const crossEdges = computed(() => displayEdges.value.filter((edge) => {
   const from = node(edge.from)
   const to = node(edge.to)
@@ -237,6 +267,10 @@ function conditionValue(item: TopologyNode, prefix: string) {
 }
 
 function nodeSubtitle(item: TopologyNode) {
+  if (item.kind === 'Registry') {
+    const bridge = registryOwnerByID.value.get(item.id)
+    return bridge ? [`McpBridge ${bridge.namespace}/${bridge.name}`] : [`${item.namespace || 'cluster-scoped'} / Registry`]
+  }
   if (item.kind !== 'Endpoint') return [`${item.namespace || 'cluster-scoped'} / ${item.kind}`]
   const service = conditionValue(item, 'Service=')
   const address = conditionValue(item, 'Address=')
@@ -249,7 +283,7 @@ function nodeSubtitle(item: TopologyNode) {
 }
 
 function nodeSubtitleTitle(item: TopologyNode) {
-  if (item.kind !== 'Endpoint') return nodeSubtitle(item).join('')
+  if (item.kind !== 'Endpoint') return nodeSubtitle(item).join(' · ')
   const service = conditionValue(item, 'Service=')
   const address = conditionValue(item, 'Address=')
   const port = conditionValue(item, 'Port=')
@@ -279,7 +313,7 @@ function updateLinkLayout() {
     const id = element.dataset.nodeId
     if (id) elements.set(id, element)
   })
-  const links = displayEdges.value.flatMap((edge, index) => {
+  const links = topologyDisplayEdges.value.flatMap((edge, index) => {
     const from = node(edge.from)
     const to = node(edge.to)
     const fromElement = elements.get(edge.from)
@@ -459,7 +493,11 @@ function hideDetailOnBlankClick(event: MouseEvent) {
 
 watch(() => props.focusNodeId, (id) => {
   const displayID = id ? displayNodeID(id) : ''
-  if (displayID && currentNodes.value.some((item) => item.id === displayID)) selectNode(displayID)
+  if (displayID && currentNodes.value.some((item) => item.id === displayID)) {
+    search.value = ''
+    problemsOnly.value = false
+    selectNode(displayID)
+  }
 }, { immediate: true })
 watch(() => activeCluster.value.id, () => {
   selectedID.value = ''
@@ -467,9 +505,9 @@ watch(() => activeCluster.value.id, () => {
   problemsOnly.value = false
 })
 watch(visibleNodes, (items) => {
-  if (selectedID.value && !items.some((item) => item.id === selectedID.value)) selectedID.value = ''
+  if (selectedID.value && !items.some((item) => item.id === selectedID.value) && selected.value?.kind !== 'McpBridge') selectedID.value = ''
 })
-watch([visibleNodes, displayEdges, groupedNodes], refreshLinkLayout, { deep: true, flush: 'post' })
+watch([visibleNodes, topologyDisplayEdges, groupedNodes], refreshLinkLayout, { deep: true, flush: 'post' })
 onMounted(refreshLinkLayout)
 onBeforeUnmount(() => {
   cancelAnimationFrame(linkLayoutFrame)
@@ -507,7 +545,7 @@ onBeforeUnmount(() => {
         <input v-model="search" placeholder="搜索当前集群的资源或命名空间" />
       </label>
       <label class="check-label"><input v-model="problemsOnly" type="checkbox" />仅问题节点</label>
-      <span class="filter-count">{{ visibleNodes.length }} / {{ displayableNodes.length }} 个对象</span>
+      <span class="filter-count">{{ visibleNodes.length }} / {{ displayableNodes.length }} 个对象<span v-if="visibleEmptyBridges.length"> · {{ visibleEmptyBridges.length }} 条空配置提示</span></span>
     </div>
 
     <div class="federated-workspace single-cluster-workspace" :class="{ 'detail-collapsed': !selected || detailCollapsed }">
@@ -521,7 +559,7 @@ onBeforeUnmount(() => {
             </div>
             <StatusBadge :status="activeCluster.connectionState === 'connected' ? 'healthy' : 'warning'" :label="stateLabel" />
           </header>
-          <div v-if="visibleNodes.length" class="cluster-columns-scroll">
+          <div v-if="visibleNodes.length || visibleEmptyBridges.length" class="cluster-columns-scroll">
             <div ref="columnsElement" class="cluster-columns" :style="{ '--category-count': groupedNodes.length }">
               <svg
                 v-if="topologyLinks.length"
@@ -538,8 +576,8 @@ onBeforeUnmount(() => {
                   :class="[
                     `relation-${link.edge.relation}`,
                     {
-                      active: selectedID && (link.edge.from === selectedID || link.edge.to === selectedID),
-                      muted: selectedID && link.edge.from !== selectedID && link.edge.to !== selectedID,
+                      active: selectedID && (link.edge.from === selectedID || link.edge.to === selectedID || selectedRegistryIDs.has(link.edge.from) || selectedRegistryIDs.has(link.edge.to)),
+                      muted: selectedID && link.edge.from !== selectedID && link.edge.to !== selectedID && !selectedRegistryIDs.has(link.edge.from) && !selectedRegistryIDs.has(link.edge.to),
                     },
                   ]"
                 >
@@ -557,7 +595,7 @@ onBeforeUnmount(() => {
                     v-for="item in category.nodes"
                     :key="item.id"
                     class="federated-node"
-                    :class="[{ selected: selectedID === item.id, boundary: boundaryEdgesFor(item).length }, `node-${item.status}`]"
+                    :class="[{ selected: selectedID === item.id || selectedRegistryIDs.has(item.id), boundary: boundaryEdgesFor(item).length }, `node-${item.status}`]"
                     :data-node-id="item.id"
                     type="button"
                     @click="selectNode(item.id)"
@@ -570,11 +608,25 @@ onBeforeUnmount(() => {
                       </small>
                     </span>
                     <em>{{ item.statusText }}</em>
+                    <span v-if="unresolvedBridgesFor(item).length" class="registry-unresolved">
+                      Registry 未确定 · {{ unresolvedBridgesFor(item).map((bridge) => `${bridge.namespace}/${bridge.name}`).join('、') }}
+                    </span>
                     <span v-if="boundaryEdgesFor(item)[0]" class="boundary-target">
                       <CloudCog :size="12" aria-hidden="true" />{{ transferLabel(boundaryEdgesFor(item)[0]) }}
                     </span>
                   </button>
-                  <div v-if="!category.nodes.length" class="topology-column-empty">当前无对象</div>
+                  <button
+                    v-for="bridge in category.id === 'backend' ? visibleEmptyBridges : []"
+                    :key="bridge.id"
+                    class="empty-bridge-notice"
+                    :class="{ selected: selectedID === bridge.id }"
+                    type="button"
+                    @click="selectNode(bridge.id)"
+                  >
+                    <Braces :size="15" aria-hidden="true" />
+                    <span><strong>{{ bridge.name }}</strong><small>McpBridge {{ bridge.namespace }}/{{ bridge.name }}</small><em>无注册中心</em></span>
+                  </button>
+                  <div v-if="!category.nodes.length && !(category.id === 'backend' && visibleEmptyBridges.length)" class="topology-column-empty">当前无对象</div>
                 </div>
               </section>
             </div>
@@ -611,6 +663,24 @@ onBeforeUnmount(() => {
           <StatusBadge :status="selected.status" :label="selected.statusText" />
           <h2>{{ selected.name }}</h2>
           <p class="detail-kind">{{ selected.kind }} / {{ activeCluster.name }}/{{ selected.namespace || 'cluster-scoped' }}</p>
+
+          <section v-if="selected.kind === 'Registry' && registryOwnerByID.get(selected.id)" class="detail-section">
+            <h3>所属 McpBridge</h3>
+            <p>{{ registryOwnerByID.get(selected.id)?.namespace }}/{{ registryOwnerByID.get(selected.id)?.name }}</p>
+          </section>
+          <section v-if="selected.kind === 'McpBridge'" class="detail-section">
+            <h3>Registry</h3>
+            <ul v-if="registryChildrenByBridgeID.get(selected.id)?.length" class="compact-list">
+              <li v-for="registry in registryChildrenByBridgeID.get(selected.id)" :key="registry.id">
+                {{ registry.namespace }}/{{ registry.name }}
+              </li>
+            </ul>
+            <p v-else class="text-warning">无注册中心</p>
+          </section>
+          <section v-if="selected.kind === 'Ingress' && unresolvedBridgesFor(selected).length" class="detail-section">
+            <h3>Registry 未确定</h3>
+            <p v-for="bridge in unresolvedBridgesFor(selected)" :key="bridge.id">引用 McpBridge {{ bridge.namespace }}/{{ bridge.name }}；Registry 未确定</p>
+          </section>
 
           <section v-if="selectedTransfers.length" class="detail-section transfer-section">
             <h3>跨集群传输</h3>

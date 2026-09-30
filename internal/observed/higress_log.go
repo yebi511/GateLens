@@ -136,15 +136,29 @@ func ParseHigressLineForProbe(line, probeID, traceID, clusterID, pod, source str
 		return domain.ObservedHop{}, false, nil
 	}
 	hop := domain.ObservedHop{
-		RequestStartTime: validLogValue(entry.StartTime), InternalRedirect: IsInternalRedirect(entry.ResponseCodeDetails),
-		AIRouting: parseAIRouting(entry.AILog), DownstreamLocalAddress: entry.DownstreamLocalAddress,
-		ObservedAt: entry.StartTime, ClusterID: clusterID, Pod: pod,
-		Authority: entry.Authority, Method: entry.Method, Path: redactQuery(entry.Path), Protocol: entry.Protocol,
-		RouteName: entry.RouteName, UpstreamCluster: entry.UpstreamCluster, UpstreamHost: entry.UpstreamHost,
-		UpstreamLocalAddress: entry.UpstreamLocalAddress, DownstreamRemoteAddress: entry.DownstreamRemoteAddress,
-		ResponseFlags: entry.ResponseFlags, ResponseCodeDetails: entry.ResponseCodeDetails,
-		UpstreamTransportFailure: entry.UpstreamTransportFailure, AILog: entry.AILog,
-		EvidenceSource: source, Correlation: correlation, Confidence: "observed",
+		RequestStartTime:         validLogValue(entry.StartTime),
+		InternalRedirect:         IsInternalRedirect(entry.ResponseCodeDetails),
+		AIRouting:                parseAIRouting(entry.AILog),
+		DownstreamLocalAddress:   entry.DownstreamLocalAddress,
+		ObservedAt:               entry.StartTime,
+		ClusterID:                clusterID,
+		Pod:                      pod,
+		Authority:                entry.Authority,
+		Method:                   entry.Method,
+		Path:                     redactQuery(entry.Path),
+		Protocol:                 entry.Protocol,
+		RouteName:                entry.RouteName,
+		UpstreamCluster:          entry.UpstreamCluster,
+		UpstreamHost:             entry.UpstreamHost,
+		UpstreamLocalAddress:     entry.UpstreamLocalAddress,
+		DownstreamRemoteAddress:  entry.DownstreamRemoteAddress,
+		ResponseFlags:            entry.ResponseFlags,
+		ResponseCodeDetails:      entry.ResponseCodeDetails,
+		UpstreamTransportFailure: entry.UpstreamTransportFailure,
+		AILog:                    entry.AILog,
+		EvidenceSource:           source,
+		Correlation:              correlation,
+		Confidence:               "observed",
 	}
 	hop.ResponseCode = integer(string(entry.ResponseCode))
 	hop.DurationMillis = integer64(string(entry.Duration))

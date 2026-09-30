@@ -568,6 +568,10 @@ func (s *Store) EnvoyConfig(ctx context.Context, gatewayID string) (domain.Envoy
 	return domain.EnvoyConfig{}, fmt.Errorf("无法读取 Envoy config_dump: %w", lastErr)
 }
 
+// fetchPodEnvoyConfig 通过 Kubernetes API 为指定 Pod 的 Envoy 管理端口建立临时 port-forward，
+// 再从分配的本地端口读取 /config_dump，并结合快照标识和观测时间解析为 EnvoyConfig。
+// 建立转发最多等待 10 秒，HTTP 请求最多等待 15 秒；上下文取消或任一步骤失败时返回错误。
+// 函数返回时会关闭停止通道，通知端口转发退出。
 func (s *Store) fetchPodEnvoyConfig(ctx context.Context, pod proxyPod, snapshotID, observedAt string) (domain.EnvoyConfig, error) {
 	transport, upgrader, err := spdy.RoundTripperFor(s.restConfig)
 	if err != nil {

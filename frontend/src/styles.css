@@ -525,6 +525,13 @@ tbody tr:hover { background: #f8fbfa; }
 .topology-column-nodes { display: grid; gap: 10px; align-content: start; padding-top: 11px; }
 .topology-column .federated-node { width: 100%; min-width: 0; }
 .topology-column .federated-node::after { display: none; }
+.registry-unresolved { grid-column: 1 / -1; padding-top: 6px; border-top: 1px dashed #e1c799; color: #946019; font-size: 9px; line-height: 1.4; overflow-wrap: anywhere; }
+.empty-bridge-notice { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 7px; width: 100%; padding: 10px; border: 1px dashed #d6ad68; border-radius: 5px; color: #72501d; background: #fff8e9; text-align: left; }
+.empty-bridge-notice strong, .empty-bridge-notice small, .empty-bridge-notice em { display: block; overflow-wrap: anywhere; }
+.empty-bridge-notice strong { font-size: 11px; }
+.empty-bridge-notice small, .empty-bridge-notice em { margin-top: 4px; font-size: 9px; }
+.empty-bridge-notice em { color: #946019; font-style: normal; font-weight: 700; }
+.empty-bridge-notice.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(11,115,104,0.16); }
 .topology-column-empty { display: grid; place-items: center; min-height: 72px; padding: 10px; border: 1px dashed #cbd7d5; color: #879696; background: rgba(255,255,255,0.58); font-size: 9px; }
 @media (max-width: 820px) {
   .single-cluster-workspace .cluster-zone { min-width: 0; }

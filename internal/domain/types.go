@@ -10,6 +10,7 @@ const (
 	StatusError   Status = "error"
 )
 
+// Context 描述当前集群及快照的概况，供 /api/v1/context 和 Agent 快照使用。
 type Context struct {
 	Cluster      Cluster  `json:"cluster"`
 	Namespaces   []string `json:"namespaces"`
@@ -17,18 +18,21 @@ type Context struct {
 	Capabilities []string `json:"adapterCapabilities"`
 }
 
+// Cluster 标识 Context 所属的集群，供概况接口展示集群名称和版本。
 type Cluster struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
 	Version string `json:"version"`
 }
 
+// Snapshot 记录一次采集的标识、时间和状态，供集群概况与拓扑标记数据时效。
 type Snapshot struct {
 	ID         string `json:"id"`
 	ObservedAt string `json:"observedAt"`
 	State      string `json:"state"`
 }
 
+// Topology 汇总集群、节点、连线和探测入口，供拓扑接口及跨集群聚合使用。
 type Topology struct {
 	SnapshotID          string            `json:"snapshotID"`
 	FederatedSnapshotID string            `json:"federatedSnapshotID,omitempty"`
@@ -41,6 +45,7 @@ type Topology struct {
 	Truncated           bool              `json:"truncated"`
 }
 
+// ProbeEntry 描述可发起主动探测的网关服务入口，供拓扑展示和探测目标选择。
 type ProbeEntry struct {
 	ID          string   `json:"id"`
 	GatewayID   string   `json:"gatewayID"`
@@ -54,6 +59,7 @@ type ProbeEntry struct {
 	DisplayName string   `json:"displayName"`
 	Addresses   []string `json:"addresses,omitempty"`
 }
+// TopologyCluster 描述拓扑中的一个集群及其快照，供联邦拓扑标识数据来源。
 type TopologyCluster struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`
@@ -64,6 +70,7 @@ type TopologyCluster struct {
 
 	Snapshot Snapshot `json:"snapshot"`
 }
+// TopologyNode 表示网关、路由、服务等拓扑实体，供拓扑图和跨集群关联使用。
 type TopologyNode struct {
 	ID            string   `json:"id"`
 	Name          string   `json:"name"`
@@ -78,6 +85,7 @@ type TopologyNode struct {
 	WorkloadScope string   `json:"workloadScope,omitempty"`
 }
 
+// TopologyEdge 表示拓扑实体间的关系及其证据，供拓扑图展示流量路径。
 type TopologyEdge struct {
 	From        string `json:"from"`
 	To          string `json:"to"`
@@ -88,6 +96,7 @@ type TopologyEdge struct {
 	Evidence    string `json:"evidence,omitempty"`
 }
 
+// EnvoyConfig 汇总网关的 Envoy 运行配置，供配置接口和 Agent 远程查询使用。
 type EnvoyConfig struct {
 	SnapshotID    string           `json:"snapshotID"`
 	ObservedAt    string           `json:"observedAt"`
@@ -105,6 +114,7 @@ type EnvoyConfig struct {
 	RawConfig     json.RawMessage  `json:"rawConfig,omitempty"`
 }
 
+// EnvoyListener 描述 Envoy 监听地址及过滤器链，供网关配置详情展示。
 type EnvoyListener struct {
 	ID           string             `json:"id"`
 	Name         string             `json:"name"`
@@ -115,6 +125,7 @@ type EnvoyListener struct {
 	FilterChains []EnvoyFilterChain `json:"filterChains"`
 }
 
+// EnvoyFilterChain 描述监听器中的匹配条件、HTTP 过滤器和路由。
 type EnvoyFilterChain struct {
 	Name        string            `json:"name"`
 	Match       string            `json:"match"`
@@ -123,6 +134,7 @@ type EnvoyFilterChain struct {
 	Routes      []EnvoyRoute      `json:"routes"`
 }
 
+// EnvoyHTTPFilter 描述过滤器的类型、执行阶段和配置摘要，供配置详情展示。
 type EnvoyHTTPFilter struct {
 	Name          string `json:"name"`
 	Type          string `json:"type"`
@@ -131,6 +143,7 @@ type EnvoyHTTPFilter struct {
 	Terminal      bool   `json:"terminal"`
 }
 
+// EnvoyExtension 汇总扩展过滤器的配置、挂载位置和依赖，供扩展详情展示。
 type EnvoyExtension struct {
 	ID            string                     `json:"id"`
 	Name          string                     `json:"name"`
@@ -143,6 +156,7 @@ type EnvoyExtension struct {
 	Dependencies  []EnvoyExtensionDependency `json:"dependencies"`
 }
 
+// EnvoyExtensionAttachment 标识扩展在监听器过滤器链中的挂载位置。
 type EnvoyExtensionAttachment struct {
 	ListenerID   string `json:"listenerID"`
 	ListenerName string `json:"listenerName"`
@@ -152,6 +166,7 @@ type EnvoyExtensionAttachment struct {
 	Position     int    `json:"position"`
 }
 
+// EnvoyExtensionDependency 记录扩展依赖的配置或集群及其解析证据。
 type EnvoyExtensionDependency struct {
 	Kind     string `json:"kind"`
 	Name     string `json:"name"`
@@ -160,6 +175,7 @@ type EnvoyExtensionDependency struct {
 	Resolved bool   `json:"resolved"`
 }
 
+// EnvoyRoute 描述过滤器链中的路由匹配和上游目标，供配置详情追踪转发规则。
 type EnvoyRoute struct {
 	Name             string                    `json:"name"`
 	Match            string                    `json:"match"`
@@ -168,17 +184,20 @@ type EnvoyRoute struct {
 	ExtProcs         []EnvoyRouteExtProcTarget `json:"extProcs,omitempty"`
 }
 
+// EnvoyRouteExtProcTarget 记录路由关联的外部处理器及其 gRPC 集群。
 type EnvoyRouteExtProcTarget struct {
 	FilterName   string   `json:"filterName"`
 	TypeURL      string   `json:"typeURL,omitempty"`
 	GRPCClusters []string `json:"grpcClusters,omitempty"`
 }
 
+// EnvoyWeightedCluster 描述路由分流时的上游集群及权重。
 type EnvoyWeightedCluster struct {
 	Name   string `json:"name"`
 	Weight int    `json:"weight"`
 }
 
+// EnvoyCluster 描述 Envoy 上游集群及其端点，供配置详情查看转发目标。
 type EnvoyCluster struct {
 	Name           string          `json:"name"`
 	Type           string          `json:"type"`
@@ -187,6 +206,7 @@ type EnvoyCluster struct {
 	Endpoints      []EnvoyEndpoint `json:"endpoints"`
 }
 
+// EnvoyEndpoint 记录上游端点的地址、健康状态和权重。
 type EnvoyEndpoint struct {
 	Address string `json:"address"`
 	Port    int    `json:"port"`
@@ -194,6 +214,7 @@ type EnvoyEndpoint struct {
 	Health  string `json:"health"`
 	Weight  int    `json:"weight"`
 }
+// Finding 记录资源诊断发现及依据，供健康发现接口和 Agent 快照使用。
 type Finding struct {
 	ID       string `json:"id"`
 	Severity Status `json:"severity"`
@@ -203,6 +224,7 @@ type Finding struct {
 	TargetID string `json:"targetID"`
 }
 
+// Resource 概括可检索资源的状态和发现数量，供资源列表接口使用。
 type Resource struct {
 	ID         string `json:"id"`
 	Kind       string `json:"kind"`
@@ -214,6 +236,7 @@ type Resource struct {
 	Findings   int    `json:"findings"`
 }
 
+// AgentSnapshot 打包 Agent 采集的集群数据，上传后由联邦存储聚合。
 type AgentSnapshot struct {
 	Cluster   TopologyCluster `json:"cluster"`
 	Context   Context         `json:"context"`
@@ -229,6 +252,7 @@ const (
 	AgentCommandProbeObserve = "probe-observe"
 )
 
+// ProbeRequest 是创建主动探测的 API 输入，指定入口和待发送的 HTTP 请求。
 type ProbeRequest struct {
 	SourceCluster  string `json:"sourceCluster"`
 	GatewayID      string `json:"gatewayID"`
@@ -242,6 +266,7 @@ type ProbeRequest struct {
 	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
 }
 
+// ProbeExecution 记录一次主动探测的响应和观测链路，供探测查询接口返回。
 type ProbeExecution struct {
 	ID                  string                `json:"id"`
 	TraceID             string                `json:"traceID"`
@@ -269,6 +294,7 @@ type ProbeExecution struct {
 	FinalUpstreamHopID  string                `json:"finalUpstreamHopID,omitempty"`
 }
 
+// ProbeSegment 表示一次探测经过的一个网关或集群段，供跨集群链路关联。
 type ProbeSegment struct {
 	Index               int                 `json:"index"`
 	ClusterID           string              `json:"clusterID"`
@@ -289,19 +315,21 @@ type ProbeSegment struct {
 	AttemptGroups       []ProbeAttemptGroup `json:"attemptGroups,omitempty"`
 }
 
-// ProbeCollection describes a bounded observation window, not all internal traffic.
+// ProbeCollection 描述日志采集窗口的结束状态；该窗口不代表全部内部流量。
 type ProbeCollection struct {
 	State       string   `json:"state"`
 	CompletedAt string   `json:"completedAt,omitempty"`
 	Reasons     []string `json:"reasons,omitempty"`
 }
 
+// ProbeRedirectSummary 汇总探测中观察到的重定向及其关联情况。
 type ProbeRedirectSummary struct {
 	ObservedRedirects int    `json:"observedRedirects"`
 	LinkedRedirects   int    `json:"linkedRedirects"`
 	ProcessState      string `json:"processState"`
 }
 
+// ProbeAttemptGroup 将同一运行来源的观测跳点归组，供探测链路还原请求尝试。
 type ProbeAttemptGroup struct {
 	ID                   string             `json:"id"`
 	RuntimeSource        string             `json:"runtimeSource,omitempty"`
@@ -314,11 +342,13 @@ type ProbeAttemptGroup struct {
 	Gaps                 []string           `json:"gaps"`
 }
 
+// ProbeAttemptLink 表示同一请求尝试中两个观测跳点之间的关联。
 type ProbeAttemptLink struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 }
 
+// AIRoutingSummary 提取访问日志中的模型路由信息，附在对应的观测跳点上。
 type AIRoutingSummary struct {
 	Provider      string `json:"provider,omitempty"`
 	RequestModel  string `json:"requestModel,omitempty"`
@@ -326,6 +356,7 @@ type AIRoutingSummary struct {
 	ResponseModel string `json:"responseModel,omitempty"`
 }
 
+// ObservedHop 表示从网关访问日志观察到的一跳，供探测链路和证据关联使用。
 type ObservedHop struct {
 	ID                        string               `json:"id,omitempty"`
 	RuntimeSource             string               `json:"runtimeSource,omitempty"`
@@ -360,9 +391,8 @@ type ObservedHop struct {
 	Confidence                string               `json:"confidence"`
 }
 
-// ExtProcObservation contains the allowlisted per-request fields emitted by
-// Envoy's ext_proc filter state. It intentionally excludes arbitrary typed
-// metadata so processor responses cannot leak request or model payloads.
+// ExtProcObservation 仅保留 Envoy ext_proc 过滤器状态中允许展示的逐请求字段，
+// 供探测跳点展示处理器结果；不接收任意类型元数据，以免泄露请求或模型载荷。
 type ExtProcObservation struct {
 	Processor                 string `json:"processor,omitempty"`
 	RuleID                    string `json:"ruleID,omitempty"`
@@ -387,6 +417,7 @@ type ExtProcObservation struct {
 	Outcome                   string `json:"outcome"`
 }
 
+// AgentCommand 是服务端下发给 Agent 的命令，用于查询配置或执行、观测探测。
 type AgentCommand struct {
 	ID                      string        `json:"id"`
 	ClusterID               string        `json:"clusterID"`
@@ -397,6 +428,7 @@ type AgentCommand struct {
 	Probe                   *ProbeCommand `json:"probe,omitempty"`
 }
 
+// ProbeCommand 携带 Agent 执行或观测主动探测所需的请求参数和关联标识。
 type ProbeCommand struct {
 	ProbeID     string `json:"probeID"`
 	TraceID     string `json:"traceID"`
@@ -411,6 +443,7 @@ type ProbeCommand struct {
 	StartedAt   string `json:"startedAt,omitempty"`
 }
 
+// AgentCommandResult 携带 Agent 返回的配置、探测结果或错误，供服务端完成命令。
 type AgentCommandResult struct {
 	CommandID string          `json:"commandID"`
 	ClusterID string          `json:"clusterID"`

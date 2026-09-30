@@ -56,6 +56,7 @@ async function locate(targetID: string) {
     clusterID.value = owner
     await nextTick()
   }
+  namespace.value = ''
   focusNodeId.value = targetID
   navigate('topology')
 }
