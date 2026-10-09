@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gatelens/gatelens/internal/domain"
 )
 
 func probeLogLine(route, details string, code int) string {
@@ -47,7 +49,7 @@ func TestProbeCacheMarksSnapshotTruncation(t *testing.T) {
 	cache := &probeLogCache{}
 	cache.merge(runtimeSnapshot(first+last), "probe", "", "edge")
 	cache.merge(runtimeSnapshot(last), "probe", "", "edge")
-	if len(cache.hops) != 2 || len(cache.reasons) == 0 || cache.canSettle() {
+	if len(cache.hops) != 2 || len(cache.issues) == 0 || cache.canSettle() {
 		t.Fatalf("cache=%+v", cache)
 	}
 }
@@ -67,7 +69,7 @@ func TestProbeCacheMarksFileRotationAndKeepsRecords(t *testing.T) {
 	cache := &probeLogCache{}
 	cache.merge(probeLogSnapshot{source: "file", content: first, fileInfo: firstInfo}, "probe", "", "edge")
 	cache.merge(probeLogSnapshot{source: "file", content: last, fileInfo: secondInfo}, "probe", "", "edge")
-	if len(cache.hops) != 2 || len(cache.reasons) == 0 || cache.hops[0].ID == cache.hops[1].ID {
+	if len(cache.hops) != 2 || len(cache.issues) == 0 || cache.hops[0].ID == cache.hops[1].ID {
 		t.Fatalf("cache=%+v", cache)
 	}
 }
@@ -84,8 +86,9 @@ func TestProbeWindowWaitsForDelayedTerminal(t *testing.T) {
 		}
 		return []probeLogSnapshot{runtimeSnapshot(content)}, nil
 	}
-	hops, state := collectProbeWindow(context.Background(), read, "probe", "", "edge", time.Second, 5*time.Millisecond, 15*time.Millisecond)
-	if len(hops) != 2 || state.State != "settled" || reads < 3 {
+	logs := collectProbeWindow(context.Background(), read, "probe", "", "edge", time.Second, 5*time.Millisecond, 15*time.Millisecond)
+	hops, state := logs.hops, logs.collection
+	if len(hops) != 2 || state.State != domain.ProbeCollectionStateSettled || reads < 3 {
 		t.Fatalf("hops=%+v state=%+v reads=%d", hops, state, reads)
 	}
 }
@@ -108,12 +111,16 @@ func TestProbeWindowBoundedAndPreservesPartialEvidence(t *testing.T) {
 				return []probeLogSnapshot{runtimeSnapshot(probeLogLine("first", "internal_redirect", 400))}, nil
 			}
 			started := time.Now()
-			hops, state := collectProbeWindow(ctx, read, "probe", "", "edge", 30*time.Millisecond, 5*time.Millisecond, 10*time.Millisecond)
-			want := mode
-			if mode == "only-redirect" {
-				want = "window-ended"
+			logs := collectProbeWindow(ctx, read, "probe", "", "edge", 30*time.Millisecond, 5*time.Millisecond, 10*time.Millisecond)
+			hops, state := logs.hops, logs.collection
+			want := domain.ProbeCollectionStateWindowEnded
+			switch mode {
+			case "read-error":
+				want = domain.ProbeCollectionStateReadError
+			case "cancelled":
+				want = domain.ProbeCollectionStateCancelled
 			}
-			if len(hops) != 1 || state.State != want || len(state.Reasons) == 0 || time.Since(started) > time.Second {
+			if len(hops) != 1 || state.State != want || len(logs.issues) == 0 || time.Since(started) > time.Second {
 				t.Fatalf("hops=%+v state=%+v", hops, state)
 			}
 		})
@@ -123,8 +130,9 @@ func TestProbeWindowBoundedAndPreservesPartialEvidence(t *testing.T) {
 func TestProbeReadUsesRemainingWindowDeadline(t *testing.T) {
 	read := func(ctx context.Context) ([]probeLogSnapshot, error) { <-ctx.Done(); return nil, ctx.Err() }
 	started := time.Now()
-	_, state := collectProbeWindow(context.Background(), read, "probe", "", "edge", 20*time.Millisecond, time.Millisecond, time.Millisecond)
-	if state.State != "window-ended" || time.Since(started) > time.Second {
+	logs := collectProbeWindow(context.Background(), read, "probe", "", "edge", 20*time.Millisecond, time.Millisecond, time.Millisecond)
+	state := logs.collection
+	if state.State != domain.ProbeCollectionStateWindowEnded || time.Since(started) > time.Second {
 		t.Fatalf("state=%+v", state)
 	}
 }
@@ -138,8 +146,37 @@ func TestExpiredReadCannotUpgradeEvidenceToSettled(t *testing.T) {
 		}
 		return []probeLogSnapshot{runtimeSnapshot(probeLogLine("terminal", "via_upstream", 200))}, nil
 	}
-	hops, state := collectProbeWindow(context.Background(), read, "probe", "", "edge", 20*time.Millisecond, time.Millisecond, time.Millisecond)
-	if len(hops) != 1 || state.State != "window-ended" {
+	logs := collectProbeWindow(context.Background(), read, "probe", "", "edge", 20*time.Millisecond, time.Millisecond, time.Millisecond)
+	hops, state := logs.hops, logs.collection
+	if len(hops) != 1 || state.State != domain.ProbeCollectionStateWindowEnded {
 		t.Fatalf("hops=%+v state=%+v", hops, state)
+	}
+}
+
+func TestProbeCollectionIssuesIgnoreDisplayWording(t *testing.T) {
+	cache := &probeLogCache{}
+	cache.merge(runtimeSnapshot(probeLogLine("terminal", "via_upstream", 200)), "probe", "", "edge")
+	if !cache.canSettle() {
+		t.Fatal("valid terminal did not settle")
+	}
+	cache.addIssue(domain.ProbeIssueCodeLogOrderUnconfirmed, "wording with no order keywords")
+	if cache.canSettle() {
+		t.Fatal("structured issue did not block stability")
+	}
+	cache.issues[0].Message = "another language"
+	if cache.canSettle() {
+		t.Fatal("message affected stability")
+	}
+	snapshot := runtimeSnapshot(probeLogLine("second", "via_upstream", 200))
+	snapshot.incomplete = true
+	cache.merge(snapshot, "probe", "", "edge")
+	found := false
+	for _, issue := range cache.issues {
+		if issue.Code == domain.ProbeIssueCodeLogWindowTruncated {
+			found = true
+		}
+	}
+	if !found || len(cache.hops) < 1 {
+		t.Fatalf("cache=%+v", cache)
 	}
 }

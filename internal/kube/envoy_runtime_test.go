@@ -95,7 +95,7 @@ func TestRebuildMergesRuntimeIntoGatewayNode(t *testing.T) {
 		if node.Kind == "GatewayWorkload" {
 			t.Fatalf("unexpected GatewayWorkload node: %#v", node)
 		}
-		if node.Kind == "Gateway" {
+		if node.Kind == domain.TopologyNodeKindGateway {
 			gatewayCount++
 		}
 		if node.ID == gatewayID {
@@ -163,7 +163,7 @@ func TestRebuildDiscoversStandaloneHigressGatewayDeployment(t *testing.T) {
 			gatewayNode = node
 		}
 	}
-	if gatewayNode == nil || gatewayNode.Kind != "Gateway" {
+	if gatewayNode == nil || gatewayNode.Kind != domain.TopologyNodeKindGateway {
 		t.Fatalf("standalone Gateway node=%#v", gatewayNode)
 	}
 	for _, want := range []string{"EnvoyConfig=available", "Controller=higress.io/gateway-controller", "Workload=higress-system/higress-gateway", "ReadyReplicas=1"} {

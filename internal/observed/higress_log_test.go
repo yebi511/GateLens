@@ -29,7 +29,7 @@ func TestProbePlaceholderIdentity(t *testing.T) {
 	} {
 		line, _ := json.Marshal(map[string]string{"gatelens_probe_id": test.probe, "trace_id": test.trace, "request_id": "probe"})
 		hop, matched, err := ParseHigressLineForProbe(string(line), "probe", "trace", "edge", "pod", "source")
-		if err != nil || matched != test.match || hop.Correlation != test.basis {
+		if err != nil || matched != test.match || string(hop.Correlation) != test.basis {
 			t.Fatalf("test=%+v hop=%+v match=%v err=%v", test, hop, matched, err)
 		}
 	}

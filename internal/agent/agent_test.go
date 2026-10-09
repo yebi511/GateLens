@@ -167,3 +167,28 @@ func TestAgentUsesRelativeExecutionTimeoutAcrossClockSkew(t *testing.T) {
 		t.Fatalf("result=%#v", result)
 	}
 }
+
+type localProbeExecutor struct{ httpCalls, observeCalls int }
+
+func (p *localProbeExecutor) ExecuteProbe(_ context.Context, command domain.ProbeCommand) (domain.ProbeAgentResult, error) {
+	p.httpCalls++
+	return domain.ProbeAgentResult{SchemaVersion: domain.ProbeSchemaVersion, ProbeID: command.ProbeID, HTTP: &domain.ProbeHTTPResult{Method: command.Method}}, nil
+}
+func (p *localProbeExecutor) ObserveProbe(_ context.Context, command domain.ProbeCommand) (domain.ProbeAgentResult, error) {
+	p.observeCalls++
+	return domain.ProbeAgentResult{SchemaVersion: domain.ProbeSchemaVersion, ProbeID: command.ProbeID}, nil
+}
+func TestAgentKeepsLocalHTTPAndObservationPayloadsSeparate(t *testing.T) {
+	executor := &localProbeExecutor{}
+	runner := &Runner{config: Config{ClusterID: "edge"}, probeExecutor: executor}
+	command := domain.AgentCommand{ID: "command", Kind: domain.AgentCommandProbeHTTP, Probe: &domain.ProbeCommand{ProbeID: "probe", Method: domain.ProbeHTTPMethodGET}}
+	result := runner.executeCommand(context.Background(), command)
+	if result.Error != "" || result.Probe == nil || result.Probe.HTTP == nil {
+		t.Fatal(result)
+	}
+	command.Kind = domain.AgentCommandProbeObserve
+	result = runner.executeCommand(context.Background(), command)
+	if result.Error != "" || result.Probe == nil || result.Probe.HTTP != nil || executor.httpCalls != 1 || executor.observeCalls != 1 {
+		t.Fatalf("result=%+v executor=%+v", result, executor)
+	}
+}

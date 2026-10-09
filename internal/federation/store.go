@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -161,7 +163,7 @@ type probeGatewayTarget struct {
 
 type probeGatewayInference struct {
 	Basis      string
-	Confidence string
+	Confidence domain.ProbeInferenceConfidence
 }
 
 func (s *Store) CreateProbe(ctx context.Context, request domain.ProbeRequest) (domain.ProbeExecution, error) {
@@ -169,12 +171,12 @@ func (s *Store) CreateProbe(ctx context.Context, request domain.ProbeRequest) (d
 	if err != nil {
 		return domain.ProbeExecution{}, err
 	}
-	method := strings.ToUpper(strings.TrimSpace(request.Method))
+	method := domain.ProbeHTTPMethod(strings.ToUpper(strings.TrimSpace(string(request.Method))))
 	if method == "" {
-		method = "GET"
+		method = domain.ProbeHTTPMethodGET
 	}
 	switch method {
-	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
+	case domain.ProbeHTTPMethodGET, domain.ProbeHTTPMethodHEAD, domain.ProbeHTTPMethodPOST, domain.ProbeHTTPMethodPUT, domain.ProbeHTTPMethodPATCH, domain.ProbeHTTPMethodDELETE, domain.ProbeHTTPMethodOPTIONS:
 	default:
 		return domain.ProbeExecution{}, fmt.Errorf("unsupported probe method %q", method)
 	}
@@ -217,20 +219,42 @@ func (s *Store) CreateProbe(ctx context.Context, request domain.ProbeRequest) (d
 	topology := s.Topology()
 	sourceGatewayID := globalID(clusterID, gatewayID)
 	targets := discoverProbeGatewayTargets(topology, sourceGatewayID)
-	target := (&url.URL{Scheme: entry.Scheme, Host: fmt.Sprintf("%s:%d", entry.DNSName, entry.Port), Path: path.Path, RawPath: path.RawPath}).String()
+	target := (&url.URL{Scheme: string(entry.Scheme), Host: fmt.Sprintf("%s:%d", entry.DNSName, entry.Port), Path: path.Path, RawPath: path.RawPath}).String()
 	execution := domain.ProbeExecution{
-		ID: probeID, TraceID: traceID, SourceCluster: clusterID,
-		GatewayID: sourceGatewayID, Method: method, Target: target, State: "running",
-		StartedAt: started.Format(time.RFC3339Nano), FederatedSnapshotID: topology.FederatedSnapshotID,
+		SchemaVersion:       domain.ProbeSchemaVersion,
+		ID:                  probeID,
+		TraceID:             traceID,
+		SourceCluster:       clusterID,
+		Segments:            []domain.ProbeSegment{},
+		Issues:              []domain.ProbeIssue{},
+		GatewayID:           sourceGatewayID,
+		Method:              method,
+		Target:              target,
+		State:               domain.ProbeExecutionStateRunning,
+		StartedAt:           started.Format(time.RFC3339Nano),
+		FederatedSnapshotID: topology.FederatedSnapshotID,
 		SnapshotConsistency: topology.Consistency,
 	}
 	command := domain.AgentCommand{
-		ID: commandID, ClusterID: clusterID, Kind: domain.AgentCommandProbeHTTP, GatewayID: gatewayID,
+		ID:                      commandID,
+		ClusterID:               clusterID,
+		Kind:                    domain.AgentCommandProbeHTTP,
+		GatewayID:               gatewayID,
 		Deadline:                started.Add(probeCommandQueueWait).Format(time.RFC3339Nano),
 		ExecutionTimeoutSeconds: timeout + 5,
-		Probe: &domain.ProbeCommand{ProbeID: probeID, TraceID: traceID, GatewayID: gatewayID,
-			EntryID: entry.ID, Method: method, Path: request.Path, Host: request.Host, APIKey: request.APIKey, ContentType: request.ContentType, Body: request.Body,
-			StartedAt: started.Format(time.RFC3339Nano)},
+		Probe: &domain.ProbeCommand{
+			ProbeID:     probeID,
+			TraceID:     traceID,
+			GatewayID:   gatewayID,
+			EntryID:     entry.ID,
+			Method:      method,
+			Path:        request.Path,
+			Host:        request.Host,
+			APIKey:      request.APIKey,
+			ContentType: request.ContentType,
+			Body:        request.Body,
+			StartedAt:   started.Format(time.RFC3339Nano),
+		},
 	}
 	pending := pendingCommand{clusterID: clusterID, result: make(chan domain.AgentCommandResult, 1)}
 	s.mutex.Lock()
@@ -267,13 +291,24 @@ func (s *Store) CreateProbe(ctx context.Context, request domain.ProbeRequest) (d
 			execution = s.failProbe(probeID, "cluster agent returned an empty probe result")
 			return execution, nil
 		}
-		execution = *result.Probe
-		execution.GatewayID = sourceGatewayID
-		execution.Target = target
-		execution.StartedAt = started.Format(time.RFC3339Nano)
-		execution.FederatedSnapshotID = topology.FederatedSnapshotID
-		execution.SnapshotConsistency = topology.Consistency
+		if err := result.Probe.Validate(command); err != nil {
+			return s.failProbe(probeID, err.Error()), nil
+		}
+		local := *result.Probe
+		execution.ResponseCode, execution.ResponseBytes, execution.DurationMillis, execution.Error = local.HTTP.ResponseCode, local.HTTP.ResponseBytes, local.HTTP.DurationMillis, local.HTTP.Error
+		execution.State = domain.ProbeExecutionStateCompleted
+		if execution.Error != "" {
+			execution.State = domain.ProbeExecutionStateFailed
+		}
+		source := targetForGateway(topology, sourceGatewayID)
+		execution.Segments = []domain.ProbeSegment{segmentFromAgent(local, source)}
+		for _, issue := range local.Issues {
+			if issue.Scope == domain.ProbeIssueScopeExecution {
+				execution.Issues = domain.AppendProbeIssue(execution.Issues, issue)
+			}
+		}
 		execution = s.completeFederatedProbe(ctx, execution, topology, targets)
+		execution.CompletedAt = s.now().UTC().Format(time.RFC3339Nano)
 		s.mutex.Lock()
 		s.probes[probeID] = execution
 		s.mutex.Unlock()
@@ -287,18 +322,9 @@ func (s *Store) CreateProbe(ctx context.Context, request domain.ProbeRequest) (d
 }
 
 func (s *Store) completeFederatedProbe(ctx context.Context, execution domain.ProbeExecution, topology domain.Topology, targets []probeGatewayTarget) domain.ProbeExecution {
-	source := targetForGateway(topology, execution.GatewayID)
-	sourceSegment := domain.ProbeSegment{
-		Index: 1, ClusterID: execution.SourceCluster, GatewayID: execution.GatewayID,
-		GatewayName: source.GatewayName, SnapshotID: source.SnapshotID, ObservedAt: source.ObservedAt,
-		State: segmentState(execution.Hops, execution.Gaps), Evidence: segmentEvidence(execution.Hops),
-		LogSource: execution.LogSource, Hops: append([]domain.ObservedHop(nil), execution.Hops...),
-		Collection: execution.Collection,
-		Gaps:       append([]string(nil), execution.Gaps...),
-	}
-	execution.Segments = []domain.ProbeSegment{sourceSegment}
+	execution.Segments[0].Index = 1
+	sourceSegment := execution.Segments[0]
 	if len(targets) == 0 {
-		execution.EvidenceComplete = len(execution.Hops) > 0
 		return observed.EnrichProbe(execution)
 	}
 
@@ -333,24 +359,18 @@ func (s *Store) completeFederatedProbe(ctx context.Context, execution domain.Pro
 		observedHops = append(observedHops, segment.Hops...)
 	}
 	inferences := inferProbeGatewayCandidates(topology, targets, observedHops, observedGatewayIDs)
-	observationComplete := true
 	for index, segment := range segments {
 		inference, inferred := inferences[targets[index].GlobalID]
-		if len(segment.Hops) == 0 && !inferred {
+		protocolFailed := slices.ContainsFunc(segment.Issues, func(issue domain.ProbeIssue) bool { return issue.Code == domain.ProbeIssueCodeProbeProtocolUnsupported })
+		if len(segment.Hops) == 0 && !inferred && !protocolFailed {
 			continue
 		}
-		if len(segment.Hops) == 0 {
+		if len(segment.Hops) == 0 && inferred {
 			segment.InferenceBasis = inference.Basis
 			segment.InferenceConfidence = inference.Confidence
+			segment.Issues = domain.AppendProbeIssue(segment.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeInference, Code: domain.ProbeIssueCodeGatewayEvidenceMissing, Message: "候选网关缺少运行时访问日志证据"})
 		}
 		execution.Segments = append(execution.Segments, segment)
-		execution.Hops = append(execution.Hops, segment.Hops...)
-		if segment.Evidence != "observed" {
-			observationComplete = false
-		}
-		for _, gap := range segment.Gaps {
-			execution.Gaps = append(execution.Gaps, fmt.Sprintf("%s/%s: %s", segment.ClusterID, segment.GatewayName, gap))
-		}
 	}
 	if len(execution.Segments) > 2 {
 		sort.SliceStable(execution.Segments[1:], func(i, j int) bool {
@@ -364,14 +384,6 @@ func (s *Store) completeFederatedProbe(ctx context.Context, execution domain.Pro
 	}
 	for index := range execution.Segments {
 		execution.Segments[index].Index = index + 1
-	}
-	sort.SliceStable(execution.Hops, func(i, j int) bool { return execution.Hops[i].ObservedAt < execution.Hops[j].ObservedAt })
-	execution.EvidenceComplete = observationComplete
-	for _, segment := range execution.Segments {
-		if segment.Evidence != "observed" {
-			execution.EvidenceComplete = false
-			break
-		}
 	}
 	return observed.EnrichProbe(execution)
 }
@@ -489,36 +501,76 @@ func normalizedUpstreamHost(value string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.Trim(value, "[]"), "."))
 }
 
-func (s *Store) observeProbeGateway(ctx context.Context, execution domain.ProbeExecution, target probeGatewayTarget) domain.ProbeSegment {
+func segmentFromAgent(local domain.ProbeAgentResult, target probeGatewayTarget) domain.ProbeSegment {
 	segment := domain.ProbeSegment{
-		ClusterID: target.ClusterID, GatewayID: target.GlobalID, GatewayName: target.GatewayName,
-		SnapshotID: target.SnapshotID, ObservedAt: target.ObservedAt, State: "collecting", Evidence: "inferred",
-		Transport: target.Transport, Destination: target.Destination,
+		ClusterID:          target.ClusterID,
+		GatewayID:          target.GlobalID,
+		GatewayName:        target.GatewayName,
+		SnapshotID:         target.SnapshotID,
+		SnapshotObservedAt: target.ObservedAt,
+		Transport:          target.Transport,
+		Destination:        target.Destination,
+		Hops:               local.Hops,
+		Collection:         local.Collection,
+		Issues:             []domain.ProbeIssue{},
 	}
-	commandID, err := newCommandID()
-	if err != nil {
-		segment.State, segment.Gaps = "unavailable", []string{err.Error()}
-		return segment
+	if segment.Hops == nil {
+		segment.Hops = []domain.ObservedHop{}
 	}
-	command := domain.AgentCommand{
-		ID: commandID, ClusterID: target.ClusterID, Kind: domain.AgentCommandProbeObserve, GatewayID: target.GatewayID,
-		Deadline:                s.now().Add(probeObserveQueueWait).UTC().Format(time.RFC3339Nano),
-		ExecutionTimeoutSeconds: int(probeObserveExecutionTimeout / time.Second),
-		Probe: &domain.ProbeCommand{ProbeID: execution.ID, TraceID: execution.TraceID,
-			GatewayID: target.GatewayID, StartedAt: execution.StartedAt},
+	for _, hop := range segment.Hops {
+		if hop.EvidenceSource != "" {
+			segment.LogSource = hop.EvidenceSource
+			break
+		}
 	}
-	result, err := s.executeProbeCommand(ctx, command, probeObserveQueueWait+probeObserveExecutionTimeout+time.Second)
-	if err != nil {
-		segment.State, segment.Gaps = "unavailable", []string{err.Error()}
-		return segment
+	for _, issue := range local.Issues {
+		if issue.Scope != domain.ProbeIssueScopeExecution {
+			segment.Issues = domain.AppendProbeIssue(segment.Issues, issue)
+		}
 	}
-	segment.Hops, segment.LogSource, segment.Gaps = result.Hops, result.LogSource, result.Gaps
-	segment.Collection = result.Collection
-	segment.State, segment.Evidence = segmentState(segment.Hops, segment.Gaps), segmentEvidence(segment.Hops)
 	return segment
 }
 
-func (s *Store) executeProbeCommand(ctx context.Context, command domain.AgentCommand, waitFor time.Duration) (domain.ProbeExecution, error) {
+func (s *Store) observeProbeGateway(ctx context.Context, execution domain.ProbeExecution, target probeGatewayTarget) domain.ProbeSegment {
+	segment := segmentFromAgent(domain.ProbeAgentResult{}, target)
+	fail := func(err error) domain.ProbeSegment {
+		state, code := domain.ProbeCollectionStateReadError, domain.ProbeIssueCodeAgentUnavailable
+		if errors.Is(err, context.Canceled) {
+			state, code = domain.ProbeCollectionStateCancelled, domain.ProbeIssueCodeCollectionCancelled
+		}
+		if errors.Is(err, domain.ErrProbeProtocolUnsupported) || errors.Is(err, domain.ErrInvalidProbeResult) {
+			code = domain.ProbeIssueCodeProbeProtocolUnsupported
+		}
+		segment.Collection = &domain.ProbeCollection{State: state, CompletedAt: s.now().UTC().Format(time.RFC3339Nano)}
+		segment.Issues = domain.AppendProbeIssue(segment.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeCollection, Code: code, Message: err.Error()})
+		return segment
+	}
+	commandID, err := newCommandID()
+	if err != nil {
+		return fail(err)
+	}
+	command := domain.AgentCommand{
+		ID:                      commandID,
+		ClusterID:               target.ClusterID,
+		Kind:                    domain.AgentCommandProbeObserve,
+		GatewayID:               target.GatewayID,
+		Deadline:                s.now().Add(probeObserveQueueWait).UTC().Format(time.RFC3339Nano),
+		ExecutionTimeoutSeconds: int(probeObserveExecutionTimeout / time.Second),
+		Probe: &domain.ProbeCommand{
+			ProbeID:   execution.ID,
+			TraceID:   execution.TraceID,
+			GatewayID: target.GatewayID,
+			StartedAt: execution.StartedAt,
+		},
+	}
+	local, err := s.executeProbeCommand(ctx, command, probeObserveQueueWait+probeObserveExecutionTimeout+time.Second)
+	if err != nil {
+		return fail(err)
+	}
+	return segmentFromAgent(local, target)
+}
+
+func (s *Store) executeProbeCommand(ctx context.Context, command domain.AgentCommand, waitFor time.Duration) (domain.ProbeAgentResult, error) {
 	pending := pendingCommand{clusterID: command.ClusterID, result: make(chan domain.AgentCommandResult, 1)}
 	s.mutex.Lock()
 	queue := s.commandQueues[command.ClusterID]
@@ -536,43 +588,29 @@ func (s *Store) executeProbeCommand(ctx context.Context, command domain.AgentCom
 	select {
 	case queue <- command:
 	case <-ctx.Done():
-		return domain.ProbeExecution{}, ctx.Err()
+		return domain.ProbeAgentResult{}, ctx.Err()
 	default:
-		return domain.ProbeExecution{}, fmt.Errorf("cluster agent %q command queue is full", command.ClusterID)
+		return domain.ProbeAgentResult{}, fmt.Errorf("cluster agent %q command queue is full", command.ClusterID)
 	}
 	timer := time.NewTimer(waitFor)
 	defer timer.Stop()
 	select {
 	case result := <-pending.result:
 		if result.Error != "" {
-			return domain.ProbeExecution{}, fmt.Errorf("cluster agent: %s", result.Error)
+			return domain.ProbeAgentResult{}, fmt.Errorf("cluster agent: %s", result.Error)
 		}
 		if result.Probe == nil {
-			return domain.ProbeExecution{}, fmt.Errorf("cluster agent returned an empty probe result")
+			return domain.ProbeAgentResult{}, fmt.Errorf("%w: empty probe result", domain.ErrInvalidProbeResult)
+		}
+		if err := result.Probe.Validate(command); err != nil {
+			return domain.ProbeAgentResult{}, err
 		}
 		return *result.Probe, nil
 	case <-ctx.Done():
-		return domain.ProbeExecution{}, ctx.Err()
+		return domain.ProbeAgentResult{}, ctx.Err()
 	case <-timer.C:
-		return domain.ProbeExecution{}, fmt.Errorf("timed out waiting for cluster agent")
+		return domain.ProbeAgentResult{}, fmt.Errorf("timed out waiting for cluster agent")
 	}
-}
-
-func segmentState(hops []domain.ObservedHop, gaps []string) string {
-	if len(hops) > 0 {
-		return "observed"
-	}
-	if len(gaps) > 0 {
-		return "missing"
-	}
-	return "inferred"
-}
-
-func segmentEvidence(hops []domain.ObservedHop) string {
-	if len(hops) > 0 {
-		return "observed"
-	}
-	return "inferred"
 }
 
 func (s *Store) GetProbe(id string) (domain.ProbeExecution, bool) {
@@ -585,7 +623,7 @@ func (s *Store) GetProbe(id string) (domain.ProbeExecution, bool) {
 func (s *Store) failProbe(id, message string) domain.ProbeExecution {
 	s.mutex.Lock()
 	probe := s.probes[id]
-	probe.State = "failed"
+	probe.State = domain.ProbeExecutionStateFailed
 	probe.Error = message
 	probe.CompletedAt = s.now().UTC().Format(time.RFC3339Nano)
 	s.probes[id] = probe
@@ -621,6 +659,9 @@ func (s *Store) resolveProbeEntry(clusterID, gatewayID, entryID string) (string,
 	}
 	for _, entry := range received.payload.Topology.ProbeEntries {
 		if entry.ID == entryID && entry.GatewayID == gatewayID {
+			if !entry.Scheme.IsValid() {
+				return "", "", domain.ProbeEntry{}, fmt.Errorf("unsupported probe entry scheme %q", entry.Scheme)
+			}
 			return clusterID, gatewayID, entry, nil
 		}
 	}
@@ -668,15 +709,10 @@ func discoverProbeGatewayTargets(topology domain.Topology, sourceGatewayID strin
 }
 
 func gatewayHasObservableRuntime(node domain.TopologyNode) bool {
-	if node.Kind != "Gateway" {
+	if node.Kind != domain.TopologyNodeKindGateway {
 		return false
 	}
-	for _, condition := range node.Conditions {
-		if condition == "EnvoyConfig=available" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(node.Conditions, "EnvoyConfig=available")
 }
 
 func discoverDeclaredProbeGatewayTargets(topology domain.Topology, sourceGatewayID string) []probeGatewayTarget {
@@ -740,7 +776,7 @@ func discoverDeclaredProbeGatewayTargets(topology domain.Topology, sourceGateway
 }
 
 func owningGateway(nodeID string, nodes map[string]domain.TopologyNode, reverse map[string][]domain.TopologyEdge) string {
-	if nodes[nodeID].Kind == "Gateway" {
+	if nodes[nodeID].Kind == domain.TopologyNodeKindGateway {
 		return nodeID
 	}
 	queue := []string{nodeID}
@@ -750,7 +786,7 @@ func owningGateway(nodeID string, nodes map[string]domain.TopologyNode, reverse 
 		queue = queue[1:]
 		for _, edge := range reverse[current] {
 			candidate := nodes[edge.From]
-			if candidate.Kind == "Gateway" && candidate.ClusterID == nodes[nodeID].ClusterID {
+			if candidate.Kind == domain.TopologyNodeKindGateway && candidate.ClusterID == nodes[nodeID].ClusterID {
 				return candidate.ID
 			}
 			if candidate.ClusterID == nodes[nodeID].ClusterID && !visited[candidate.ID] {
@@ -952,7 +988,7 @@ func (s *Store) resolveGateway(gatewayID string) (string, string, error) {
 
 func snapshotHasGateway(snapshot domain.AgentSnapshot, gatewayID string) bool {
 	for _, node := range snapshot.Topology.Nodes {
-		if node.Kind == "Gateway" && node.ID == gatewayID {
+		if node.Kind == domain.TopologyNodeKindGateway && node.ID == gatewayID {
 			return true
 		}
 	}
@@ -982,7 +1018,7 @@ func (s *Store) federated() (domain.Topology, []domain.Finding) {
 	snapshots := s.snapshotList()
 	result := domain.Topology{}
 	if len(snapshots) == 0 {
-		result.Consistency = "waiting-for-agents"
+		result.Consistency = domain.SnapshotConsistencyWaitingForAgents
 		return result, nil
 	}
 	var findings []domain.Finding
@@ -1037,11 +1073,11 @@ func (s *Store) federated() (domain.Topology, []domain.Finding) {
 	result.Edges = append(result.Edges, links...)
 	findings = append(findings, linkFindings...)
 	result.ObservedAt = latest.Format(time.RFC3339)
-	result.Consistency = "consistent-window"
+	result.Consistency = domain.SnapshotConsistencyConsistentWindow
 	if stale {
-		result.Consistency = "remote-unavailable"
+		result.Consistency = domain.SnapshotConsistencyRemoteUnavailable
 	} else if !earliest.IsZero() && latest.Sub(earliest) > time.Minute {
-		result.Consistency = "time-skew"
+		result.Consistency = domain.SnapshotConsistencyTimeSkew
 	}
 	hash := sha256.Sum256([]byte(strings.Join(snapshotKeys, "|")))
 	result.FederatedSnapshotID = fmt.Sprintf("federated-%x", hash[:8])
@@ -1060,7 +1096,7 @@ func discoverLinks(nodes []domain.TopologyNode, existing []domain.TopologyEdge) 
 }
 
 func outboundKeys(node domain.TopologyNode) []string {
-	if node.Kind != "TransitHop" && node.Kind != "Registry" && node.Kind != "Service" {
+	if node.Kind != domain.TopologyNodeKindTransitHop && node.Kind != domain.TopologyNodeKindRegistry && node.Kind != domain.TopologyNodeKindService {
 		return nil
 	}
 	keys := valuesWithPrefixes(node.Conditions, "Destination=", "Domain=", "ExternalName=")
@@ -1068,7 +1104,7 @@ func outboundKeys(node domain.TopologyNode) []string {
 }
 
 func entryKeys(node domain.TopologyNode) []string {
-	if node.Kind != "Gateway" && node.Kind != "Listener" && node.Kind != "Ingress" {
+	if node.Kind != domain.TopologyNodeKindGateway && node.Kind != domain.TopologyNodeKindListener && node.Kind != domain.TopologyNodeKindIngress {
 		return nil
 	}
 	keys := valuesWithPrefixes(node.Conditions, "Address=", "Hostname=")
@@ -1082,9 +1118,9 @@ func entryEvidence(node domain.TopologyNode) string {
 	}
 	location += node.Name
 	if node.Source == "" {
-		return node.Kind + " " + location
+		return string(node.Kind) + " " + location
 	}
-	return node.Kind + " " + location + " (" + node.Source + ")"
+	return string(node.Kind) + " " + location + " (" + node.Source + ")"
 }
 func valuesWithPrefixes(values []string, prefixes ...string) []string {
 	var result []string

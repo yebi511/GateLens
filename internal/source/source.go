@@ -26,8 +26,8 @@ type AgentCommandBroker interface {
 }
 
 type ProbeExecutor interface {
-	ExecuteProbe(context.Context, domain.ProbeCommand) (domain.ProbeExecution, error)
-	ObserveProbe(context.Context, domain.ProbeCommand) (domain.ProbeExecution, error)
+	ExecuteProbe(context.Context, domain.ProbeCommand) (domain.ProbeAgentResult, error)
+	ObserveProbe(context.Context, domain.ProbeCommand) (domain.ProbeAgentResult, error)
 }
 
 type ProbeStore interface {

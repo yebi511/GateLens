@@ -197,7 +197,7 @@ func TestFederatedProbeCompletesThroughAgentEndpoints(t *testing.T) {
 	if nextResponse.Code != http.StatusOK || json.NewDecoder(nextResponse.Body).Decode(&command) != nil || command.Kind != domain.AgentCommandProbeHTTP || command.Probe == nil {
 		t.Fatalf("next status=%d command=%#v body=%s", nextResponse.Code, command, nextResponse.Body.String())
 	}
-	probe := domain.ProbeExecution{ID: command.Probe.ProbeID, TraceID: command.Probe.TraceID, SourceCluster: "edge", State: "completed", Hops: []domain.ObservedHop{{RouteName: "chat", UpstreamHost: "10.0.0.8:8000", Confidence: "observed"}}, EvidenceComplete: true}
+	probe := domain.ProbeAgentResult{SchemaVersion: domain.ProbeSchemaVersion, ProbeID: command.Probe.ProbeID, TraceID: command.Probe.TraceID, ClusterID: "edge", GatewayID: command.GatewayID, HTTP: &domain.ProbeHTTPResult{Method: command.Probe.Method, ResponseCode: 200}, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled}, Hops: []domain.ObservedHop{{ID: "record-1", ClusterID: "edge", RouteName: "chat", UpstreamHost: "10.0.0.8:8000", Confidence: domain.ObservationConfidenceObserved}}}
 	resultBody, _ := json.Marshal(domain.AgentCommandResult{CommandID: command.ID, ClusterID: "edge", Probe: &probe})
 	resultRequest := httptest.NewRequest(http.MethodPost, "/api/v1/agent/command-results", bytes.NewReader(resultBody)).WithContext(ctx)
 	resultRequest.Header.Set("Authorization", "Bearer shared-token")
@@ -211,7 +211,18 @@ func TestFederatedProbeCompletesThroughAgentEndpoints(t *testing.T) {
 		t.Fatalf("probe status=%d body=%s", response.Code, response.Body.String())
 	}
 	var returned domain.ProbeExecution
-	if err := json.NewDecoder(response.Body).Decode(&returned); err != nil || len(returned.Hops) != 1 || returned.Hops[0].RouteName != "chat" {
+	if err := json.NewDecoder(response.Body).Decode(&returned); err != nil || returned.SchemaVersion != domain.ProbeSchemaVersion || len(returned.Segments) != 1 || len(returned.Segments[0].Hops) != 1 || returned.Segments[0].Hops[0].RouteName != "chat" {
 		t.Fatalf("returned=%#v err=%v", returned, err)
+	}
+	query := httptest.NewRecorder()
+	handler.ServeHTTP(query, httptest.NewRequest(http.MethodGet, "/api/v1/probes/"+returned.ID, nil))
+	var saved domain.ProbeExecution
+	if query.Code != http.StatusOK || json.NewDecoder(query.Body).Decode(&saved) != nil {
+		t.Fatalf("query=%s", query.Body.String())
+	}
+	createdJSON, _ := json.Marshal(returned)
+	savedJSON, _ := json.Marshal(saved)
+	if !bytes.Equal(createdJSON, savedJSON) {
+		t.Fatalf("create/query mismatch: %s / %s", createdJSON, savedJSON)
 	}
 }

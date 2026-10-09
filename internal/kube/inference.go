@@ -48,7 +48,7 @@ func (s *Store) addInferencePool(snap *snapshot, pool *unstructured.Unstructured
 	}
 
 	snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-		ID: poolID, Name: pool.GetName(), Kind: "InferencePool", Namespace: pool.GetNamespace(), ClusterID: s.clusterID,
+		ID: poolID, Name: pool.GetName(), Kind: domain.TopologyNodeKindInferencePool, Namespace: pool.GetNamespace(), ClusterID: s.clusterID,
 		Status: status, StatusText: statusText, Summary: summary, Conditions: conditions,
 		Source: pool.GetAPIVersion() + " InferencePool",
 	})
@@ -77,7 +77,7 @@ func (s *Store) addInferencePool(snap *snapshot, pool *unstructured.Unstructured
 			serviceSummary = "Service 与 InferencePool selector 匹配，但没有 EndpointSlice 地址。"
 		}
 		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-			ID: serviceID, Name: service.Name, Kind: "Service", Namespace: service.Namespace, ClusterID: s.clusterID,
+			ID: serviceID, Name: service.Name, Kind: domain.TopologyNodeKindService, Namespace: service.Namespace, ClusterID: s.clusterID,
 			Status: serviceStatus, StatusText: serviceText, Summary: serviceSummary,
 			Conditions: []string{"InferencePool=" + pool.GetNamespace() + "/" + pool.GetName(), fmt.Sprintf("Endpoints=%d", len(endpoints[key]))}, Source: "v1 Service selector",
 		})
@@ -99,7 +99,7 @@ func (s *Store) addInferencePool(snap *snapshot, pool *unstructured.Unstructured
 		}
 		podID := "pod/" + pod.Namespace + "/" + pod.Name
 		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-			ID: podID, Name: pod.Name, Kind: "Pod", Namespace: pod.Namespace, ClusterID: s.clusterID,
+			ID: podID, Name: pod.Name, Kind: domain.TopologyNodeKindPod, Namespace: pod.Namespace, ClusterID: s.clusterID,
 			Status: podStatus, StatusText: podStatusText,
 			Summary:    "InferencePool " + pool.GetName() + " 选择的模型服务 Pod。",
 			Conditions: []string{"Ready=" + fmt.Sprint(isReady), "Phase=" + string(pod.Status.Phase)}, Source: "v1 Pod",
@@ -139,7 +139,7 @@ func addEndpointPicker(snap *snapshot, pool *unstructured.Unstructured) string {
 		conditions = append(conditions, fmt.Sprintf("Port=%d", port))
 	}
 	snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-		ID: id, Name: name, Kind: "EndpointPicker", Namespace: namespace, ClusterID: snap.context.Cluster.ID,
+		ID: id, Name: name, Kind: domain.TopologyNodeKindEndpointPicker, Namespace: namespace, ClusterID: snap.context.Cluster.ID,
 		Status: domain.StatusHealthy, StatusText: "已配置", Summary: "InferencePool 使用的 Endpoint Picker 扩展。",
 		Conditions: conditions, Source: pool.GetAPIVersion() + " InferencePool.spec.endpointPickerRef",
 	})

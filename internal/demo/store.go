@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gatelens/gatelens/internal/domain"
+	"github.com/gatelens/gatelens/internal/observed"
 )
 
 type Store struct {
@@ -24,7 +25,7 @@ func NewStore() *Store {
 	snapshot := domain.Snapshot{ID: "snapshot-prod-20260724-104218", ObservedAt: "2026-07-24T10:42:18+08:00", State: "complete"}
 	return &Store{
 		context:  domain.Context{Cluster: domain.Cluster{ID: "edge-prod", Name: "prod-cn-shanghai", Version: "Kubernetes 1.31"}, Namespaces: []string{"all", "higress-system", "ai-platform", "inference"}, Snapshot: snapshot, Capabilities: []string{"gateway-api", "higress", "inference-extension", "transit-hop"}},
-		topology: domain.Topology{SnapshotID: snapshot.ID, FederatedSnapshotID: "federated-prod-20260724-104218", ObservedAt: snapshot.ObservedAt, Consistency: "consistent-window", Clusters: demoClusters(snapshot), Nodes: demoNodes(), Edges: demoEdges(), ProbeEntries: []domain.ProbeEntry{{ID: "demo-entry", GatewayID: "gateway-public", ClusterID: "edge-prod", Namespace: "higress-system", ServiceName: "higress-gateway", DNSName: "higress-gateway.higress-system.svc.cluster.local", Port: 80, Scheme: "http", Protocol: "HTTP", DisplayName: "higress-system/higress-gateway:80 (HTTP)"}}},
+		topology: domain.Topology{SnapshotID: snapshot.ID, FederatedSnapshotID: "federated-prod-20260724-104218", ObservedAt: snapshot.ObservedAt, Consistency: domain.SnapshotConsistencyConsistentWindow, Clusters: demoClusters(snapshot), Nodes: demoNodes(), Edges: demoEdges(), ProbeEntries: []domain.ProbeEntry{{ID: "demo-entry", GatewayID: "gateway-public", ClusterID: "edge-prod", Namespace: "higress-system", ServiceName: "higress-gateway", DNSName: "higress-gateway.higress-system.svc.cluster.local", Port: 80, Scheme: domain.ProbeSchemeHTTP, Protocol: "HTTP", DisplayName: "higress-system/higress-gateway:80 (HTTP)"}}},
 		findings: []domain.Finding{
 			{ID: "no-ready-endpoints", Severity: domain.StatusError, Title: "后端没有可用 Endpoint", Resource: "Service / inference/embedding-backend", Basis: "ReadyEndpoints=0", TargetID: "service-embedding"},
 			{ID: "excluded-endpoint", Severity: domain.StatusWarning, Title: "Endpoint 被推理池排除", Resource: "Endpoint / inference/qwen-72b-c", Basis: "readiness=false", TargetID: "endpoint-qwen-c"},
@@ -46,29 +47,36 @@ func (s *Store) CreateProbe(_ context.Context, request domain.ProbeRequest) (dom
 	if request.EntryID != "demo-entry" || request.SourceCluster != "edge-prod" {
 		return domain.ProbeExecution{}, fmt.Errorf("demo probe entry not found")
 	}
+	method := domain.ProbeHTTPMethod(strings.ToUpper(strings.TrimSpace(string(request.Method))))
+	if method == "" {
+		method = domain.ProbeHTTPMethodGET
+	}
+	if !method.IsValid() {
+		return domain.ProbeExecution{}, fmt.Errorf("unsupported probe method %q", method)
+	}
 	now := time.Now().UTC()
 	s.mutex.Lock()
 	id := fmt.Sprintf("demo-probe-%d", len(s.probes)+1)
 	execution := domain.ProbeExecution{
-		ID: id, TraceID: fmt.Sprintf("demo-trace-%d", len(s.probes)+1), SourceCluster: "edge-prod", GatewayID: "gateway-public",
-		Method: strings.ToUpper(request.Method), Target: "http://higress-gateway.higress-system.svc.cluster.local:80" + strings.Split(request.Path, "?")[0],
-		State: "completed", StartedAt: now.Add(-18 * time.Millisecond).Format(time.RFC3339Nano), CompletedAt: now.Format(time.RFC3339Nano),
-		ResponseCode: 200, ResponseBytes: 842, DurationMillis: 18, LogSource: "demo-higress-json-log", EvidenceComplete: true,
+		SchemaVersion: domain.ProbeSchemaVersion, Issues: []domain.ProbeIssue{}, ID: id, TraceID: fmt.Sprintf("demo-trace-%d", len(s.probes)+1), SourceCluster: "edge-prod", GatewayID: "gateway-public",
+		Method: method, Target: "http://higress-gateway.higress-system.svc.cluster.local:80" + strings.Split(request.Path, "?")[0],
+		State: domain.ProbeExecutionStateCompleted, StartedAt: now.Add(-18 * time.Millisecond).Format(time.RFC3339Nano), CompletedAt: now.Format(time.RFC3339Nano),
+		ResponseCode: 200, ResponseBytes: 842, DurationMillis: 18,
 		FederatedSnapshotID: s.topology.FederatedSnapshotID, SnapshotConsistency: s.topology.Consistency,
 	}
 	hop := domain.ObservedHop{
-		ObservedAt: now.Format(time.RFC3339Nano), ClusterID: "edge-prod", Pod: "higress-system/higress-gateway-demo", Authority: request.Host,
-		Method: execution.Method, Path: strings.Split(request.Path, "?")[0], Protocol: "HTTP/2", RouteName: "inference.chat-completions.0",
+		ID: "record-1", RuntimeSource: "edge-prod/higress-system/higress-gateway-demo/demo/proxy", LogSourceID: "demo-log", LogSequence: 1, RequestStartTime: now.Format(time.RFC3339Nano), DownstreamRemoteAddress: "192.0.2.1:1234", DownstreamLocalAddress: "192.0.2.2:80", ObservedAt: now.Format(time.RFC3339Nano), ClusterID: "edge-prod", Pod: "higress-system/higress-gateway-demo", Authority: request.Host,
+		Method: string(execution.Method), Path: strings.Split(request.Path, "?")[0], Protocol: "HTTP/2", RouteName: "inference.chat-completions.0",
 		UpstreamCluster: "outbound|8080||qwen-72b-server.inference.svc.cluster.local", UpstreamHost: "10.42.3.18:8080",
 		ResponseCode: 200, ResponseFlags: "-", ResponseCodeDetails: "via_upstream", DurationMillis: 18, UpstreamServiceTimeMillis: 9,
-		EvidenceSource: "demo-higress-json-log", Correlation: "probe-id", Confidence: "observed",
+		EvidenceSource: "demo-higress-json-log", Correlation: domain.ProbeCorrelationProbeID, Confidence: domain.ObservationConfidenceObserved,
 		ExtProcs: []domain.ExtProcObservation{
-			{Processor: "BBR", RuleID: "body-model-match", SelectedPool: "qwen-production", ReasonCode: "model_match", RequestHeaderCalls: 1, RequestBodyCalls: 1, RequestHeaderLatencyUS: 410, RequestBodyLatencyUS: 1740, GRPCStatus: "0", Invoked: true, Outcome: "success"},
-			{Processor: "EPP", SelectedEndpoint: "10.42.3.18:8080", ReasonCode: "fallback_to_cached_endpoint", RequestHeaderCalls: 1, RequestHeaderLatencyUS: 3200, GRPCStatus: "DeadlineExceeded", FailureModeAllowed: true, MessageTimeout: true, Invoked: true, Outcome: "fail-open"},
+			{Processor: "BBR", RuleID: "body-model-match", SelectedPool: "qwen-production", ReasonCode: "model_match", RequestHeaderCalls: 1, RequestBodyCalls: 1, RequestHeaderLatencyUS: 410, RequestBodyLatencyUS: 1740, GRPCStatus: "0", Invoked: true, Outcome: domain.ExtProcOutcomeSuccess},
+			{Processor: "EPP", SelectedEndpoint: "10.42.3.18:8080", ReasonCode: "fallback_to_cached_endpoint", RequestHeaderCalls: 1, RequestHeaderLatencyUS: 3200, GRPCStatus: "DeadlineExceeded", FailureModeAllowed: true, MessageTimeout: true, Invoked: true, Outcome: domain.ExtProcOutcomeFailOpen},
 		},
 	}
-	execution.Hops = []domain.ObservedHop{hop}
-	execution.Segments = []domain.ProbeSegment{{Index: 1, ClusterID: "edge-prod", GatewayID: "gateway-public", GatewayName: "ai-public-gateway", SnapshotID: s.topology.SnapshotID, ObservedAt: now.Format(time.RFC3339Nano), State: "observed", Evidence: "observed", LogSource: execution.LogSource, Hops: execution.Hops}}
+	execution.Segments = []domain.ProbeSegment{{Index: 1, ClusterID: "edge-prod", GatewayID: "gateway-public", GatewayName: "ai-public-gateway", SnapshotID: s.topology.SnapshotID, SnapshotObservedAt: now.Format(time.RFC3339Nano), LogSource: "demo-higress-json-log", Hops: []domain.ObservedHop{hop}, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled}, Issues: []domain.ProbeIssue{}}}
+	execution = observed.EnrichProbe(execution)
 	s.probes[id] = execution
 	s.mutex.Unlock()
 	return execution, nil
@@ -117,23 +125,23 @@ func demoClusters(edgeSnapshot domain.Snapshot) []domain.TopologyCluster {
 }
 func demoNodes() []domain.TopologyNode {
 	return []domain.TopologyNode{
-		{ID: "gateway-public", Name: "ai-public-gateway", Kind: "Gateway", Namespace: "ai-platform", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "已接受", Summary: "面向公网 API 的 Gateway，由 Higress 工作负载处理。", Conditions: []string{"Accepted=True", "Programmed=True", "EnvoyConfig=available", "Controller=higress.io/gateway-controller", "Workload=higress-system/higress-gateway", "ReadyReplicas=3"}, Source: "gateway.networking.k8s.io/v1 Gateway", WorkloadScope: "higress-system"},
-		{ID: "listener-https", Name: "https-api", Kind: "Listener", Namespace: "ai-platform", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "已接受", Summary: "匹配 api.ai.example.com 的 HTTPS 入口。", Conditions: []string{"Accepted=True", "ResolvedRefs=True"}, Source: "Gateway.spec.listeners[0]"},
-		{ID: "route-chat", Name: "chat-completions", Kind: "HTTPRoute", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "已解析", Summary: "跨命名空间附着到入口 Listener 的聊天路由。", Conditions: []string{"Accepted=True", "ResolvedRefs=True"}, Source: "gateway.networking.k8s.io/v1 HTTPRoute"},
-		{ID: "route-embeddings", Name: "embeddings-v1", Kind: "HTTPRoute", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "1 个警告", Summary: "匹配 embeddings 请求，但目标 Service 没有 Ready Endpoint。", Conditions: []string{"Accepted=True", "BackendNotReady=True"}, Source: "gateway.networking.k8s.io/v1 HTTPRoute"},
-		{ID: "pool-qwen", Name: "qwen-production", Kind: "InferencePool", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "2/3 Ready", Summary: "模型候选池；一个端点被排除。", Conditions: []string{"Resolved=True", "AvailableEndpoints=2/3"}, Source: "inference.networking.k8s.io/v1 InferencePool"},
-		{ID: "service-embedding", Name: "embedding-backend", Kind: "Service", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusError, StatusText: "端点不可用", Summary: "Service 已解析，但没有 Ready Endpoint。", Conditions: []string{"ReadyEndpoints=0"}, Source: "v1 Service"},
-		{ID: "endpoint-qwen-a", Name: "qwen-72b-a", Kind: "Endpoint", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct 副本 A。", Conditions: []string{"Ready=True", "Address=10.42.3.18", "TargetRef=Pod/inference/qwen-72b-a", "Port=8080", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
-		{ID: "endpoint-qwen-b", Name: "qwen-72b-b", Kind: "Endpoint", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct 副本 B。", Conditions: []string{"Ready=True", "Address=10.42.4.22", "Port=8080", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
-		{ID: "endpoint-qwen-c", Name: "qwen-72b-c", Kind: "Endpoint", Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "NotReady", Summary: "readiness=false，已从候选集中排除。", Conditions: []string{"Ready=False", "Address=10.42.7.9", "Port=8080", "Excluded=True"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
-		{ID: "transit-inference", Name: "inference-gw.example", Kind: "TransitHop", Namespace: "", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "远端未接入", Summary: "独立推理集群的 Istio IngressGateway 边界。只知道 HTTPS+mTLS 目标，尚未接入远端配置。", Conditions: []string{"Transport=HTTPS+mTLS", "RemoteCluster=unknown"}, Source: "Higress upstream configuration"},
-		{ID: "gpu-ingress", Name: "inference-ingress", Kind: "Gateway", Namespace: "istio-system", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Connected", Summary: "Istio ingress gateway for traffic from the edge cluster.", Conditions: []string{"Programmed=True", "mTLS=STRICT", "ReadyReplicas=3"}, Source: "networking.istio.io/v1 Gateway", WorkloadScope: "gpu-prod/istio-system"},
-		{ID: "gpu-listener", Name: "https-inference", Kind: "Listener", Namespace: "istio-system", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Accepted", Summary: "TLS listener for the registered inference ingress endpoint.", Conditions: []string{"Protocol=HTTPS", "TLS=PASSTHROUGH"}, Source: "Istio Gateway server"},
-		{ID: "gpu-route-chat", Name: "qwen-chat", Kind: "HTTPRoute", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Resolved", Summary: "Maps chat API traffic to the Qwen inference service.", Conditions: []string{"ResolvedRefs=True", "Evidence=configuration"}, Source: "networking.istio.io/v1 VirtualService"},
-		{ID: "gpu-service-qwen", Name: "qwen-72b-server", Kind: "Service", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "2 Ready", Summary: "GPU inference service for qwen2.5-72b-instruct.", Conditions: []string{"ReadyEndpoints=2"}, Source: "v1 Service"},
-		{ID: "gpu-pool-qwen", Name: "qwen-production", Kind: "InferencePool", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "2/3 Ready", Summary: "Model candidate pool; one endpoint is excluded by readiness.", Conditions: []string{"Resolved=True", "AvailableEndpoints=2/3"}, Source: "inference.networking.k8s.io/v1 InferencePool"},
-		{ID: "gpu-endpoint-qwen-a", Name: "qwen-72b-a", Kind: "Endpoint", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct replica on gpu-a100-01.", Conditions: []string{"Ready=True", "Service=inference/qwen-72b-server", "Address=10.42.3.18", "TargetRef=Pod/inference/qwen-72b-a", "Port=8080", "Node=gpu-a100-01", "GPU=A100-80G", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
-		{ID: "gpu-endpoint-qwen-b", Name: "qwen-72b-b", Kind: "Endpoint", Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct replica on gpu-a100-02.", Conditions: []string{"Ready=True", "Service=inference/qwen-72b-server", "Address=10.42.4.22", "Port=8080", "Node=gpu-a100-02", "GPU=A100-80G", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
+		{ID: "gateway-public", Name: "ai-public-gateway", Kind: domain.TopologyNodeKindGateway, Namespace: "ai-platform", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "已接受", Summary: "面向公网 API 的 Gateway，由 Higress 工作负载处理。", Conditions: []string{"Accepted=True", "Programmed=True", "EnvoyConfig=available", "Controller=higress.io/gateway-controller", "Workload=higress-system/higress-gateway", "ReadyReplicas=3"}, Source: "gateway.networking.k8s.io/v1 Gateway", WorkloadScope: "higress-system"},
+		{ID: "listener-https", Name: "https-api", Kind: domain.TopologyNodeKindListener, Namespace: "ai-platform", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "已接受", Summary: "匹配 api.ai.example.com 的 HTTPS 入口。", Conditions: []string{"Accepted=True", "ResolvedRefs=True"}, Source: "Gateway.spec.listeners[0]"},
+		{ID: "route-chat", Name: "chat-completions", Kind: domain.TopologyNodeKindHTTPRoute, Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "已解析", Summary: "跨命名空间附着到入口 Listener 的聊天路由。", Conditions: []string{"Accepted=True", "ResolvedRefs=True"}, Source: "gateway.networking.k8s.io/v1 HTTPRoute"},
+		{ID: "route-embeddings", Name: "embeddings-v1", Kind: domain.TopologyNodeKindHTTPRoute, Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "1 个警告", Summary: "匹配 embeddings 请求，但目标 Service 没有 Ready Endpoint。", Conditions: []string{"Accepted=True", "BackendNotReady=True"}, Source: "gateway.networking.k8s.io/v1 HTTPRoute"},
+		{ID: "pool-qwen", Name: "qwen-production", Kind: domain.TopologyNodeKindInferencePool, Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "2/3 Ready", Summary: "模型候选池；一个端点被排除。", Conditions: []string{"Resolved=True", "AvailableEndpoints=2/3"}, Source: "inference.networking.k8s.io/v1 InferencePool"},
+		{ID: "service-embedding", Name: "embedding-backend", Kind: domain.TopologyNodeKindService, Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusError, StatusText: "端点不可用", Summary: "Service 已解析，但没有 Ready Endpoint。", Conditions: []string{"ReadyEndpoints=0"}, Source: "v1 Service"},
+		{ID: "endpoint-qwen-a", Name: "qwen-72b-a", Kind: domain.TopologyNodeKindEndpoint, Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct 副本 A。", Conditions: []string{"Ready=True", "Address=10.42.3.18", "TargetRef=Pod/inference/qwen-72b-a", "Port=8080", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
+		{ID: "endpoint-qwen-b", Name: "qwen-72b-b", Kind: domain.TopologyNodeKindEndpoint, Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct 副本 B。", Conditions: []string{"Ready=True", "Address=10.42.4.22", "Port=8080", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
+		{ID: "endpoint-qwen-c", Name: "qwen-72b-c", Kind: domain.TopologyNodeKindEndpoint, Namespace: "inference", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "NotReady", Summary: "readiness=false，已从候选集中排除。", Conditions: []string{"Ready=False", "Address=10.42.7.9", "Port=8080", "Excluded=True"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
+		{ID: "transit-inference", Name: "inference-gw.example", Kind: domain.TopologyNodeKindTransitHop, Namespace: "", ClusterID: "edge-prod", Status: domain.StatusWarning, StatusText: "远端未接入", Summary: "独立推理集群的 Istio IngressGateway 边界。只知道 HTTPS+mTLS 目标，尚未接入远端配置。", Conditions: []string{"Transport=HTTPS+mTLS", "RemoteCluster=unknown"}, Source: "Higress upstream configuration"},
+		{ID: "gpu-ingress", Name: "inference-ingress", Kind: domain.TopologyNodeKindGateway, Namespace: "istio-system", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Connected", Summary: "Istio ingress gateway for traffic from the edge cluster.", Conditions: []string{"Programmed=True", "mTLS=STRICT", "ReadyReplicas=3"}, Source: "networking.istio.io/v1 Gateway", WorkloadScope: "gpu-prod/istio-system"},
+		{ID: "gpu-listener", Name: "https-inference", Kind: domain.TopologyNodeKindListener, Namespace: "istio-system", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Accepted", Summary: "TLS listener for the registered inference ingress endpoint.", Conditions: []string{"Protocol=HTTPS", "TLS=PASSTHROUGH"}, Source: "Istio Gateway server"},
+		{ID: "gpu-route-chat", Name: "qwen-chat", Kind: domain.TopologyNodeKindHTTPRoute, Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Resolved", Summary: "Maps chat API traffic to the Qwen inference service.", Conditions: []string{"ResolvedRefs=True", "Evidence=configuration"}, Source: "networking.istio.io/v1 VirtualService"},
+		{ID: "gpu-service-qwen", Name: "qwen-72b-server", Kind: domain.TopologyNodeKindService, Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "2 Ready", Summary: "GPU inference service for qwen2.5-72b-instruct.", Conditions: []string{"ReadyEndpoints=2"}, Source: "v1 Service"},
+		{ID: "gpu-pool-qwen", Name: "qwen-production", Kind: domain.TopologyNodeKindInferencePool, Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "2/3 Ready", Summary: "Model candidate pool; one endpoint is excluded by readiness.", Conditions: []string{"Resolved=True", "AvailableEndpoints=2/3"}, Source: "inference.networking.k8s.io/v1 InferencePool"},
+		{ID: "gpu-endpoint-qwen-a", Name: "qwen-72b-a", Kind: domain.TopologyNodeKindEndpoint, Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct replica on gpu-a100-01.", Conditions: []string{"Ready=True", "Service=inference/qwen-72b-server", "Address=10.42.3.18", "TargetRef=Pod/inference/qwen-72b-a", "Port=8080", "Node=gpu-a100-01", "GPU=A100-80G", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
+		{ID: "gpu-endpoint-qwen-b", Name: "qwen-72b-b", Kind: domain.TopologyNodeKindEndpoint, Namespace: "inference", ClusterID: "gpu-prod", Status: domain.StatusHealthy, StatusText: "Ready", Summary: "qwen2.5-72b-instruct replica on gpu-a100-02.", Conditions: []string{"Ready=True", "Service=inference/qwen-72b-server", "Address=10.42.4.22", "Port=8080", "Node=gpu-a100-02", "GPU=A100-80G", "Weight=50"}, Source: "discovery.k8s.io/v1 EndpointSlice"},
 	}
 }
 func demoEdges() []domain.TopologyEdge {

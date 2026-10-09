@@ -21,12 +21,21 @@ const (
 	maxProbeLogBytes      = 8 << 20
 )
 
-func (s *Store) ExecuteProbe(ctx context.Context, command domain.ProbeCommand) (domain.ProbeExecution, error) {
+func (s *Store) ExecuteProbe(ctx context.Context, command domain.ProbeCommand) (domain.ProbeAgentResult, error) {
 	started := time.Now().UTC()
-	result := domain.ProbeExecution{
-		ID: command.ProbeID, TraceID: command.TraceID,
-		SourceCluster: s.clusterID, GatewayID: command.GatewayID, Method: command.Method,
-		State: "running", StartedAt: started.Format(time.RFC3339Nano),
+	result := domain.ProbeAgentResult{
+		SchemaVersion: domain.ProbeSchemaVersion,
+		ProbeID:       command.ProbeID,
+		TraceID:       command.TraceID,
+		ClusterID:     s.clusterID,
+		GatewayID:     command.GatewayID,
+		StartedAt:     started.Format(time.RFC3339Nano),
+		HTTP:          &domain.ProbeHTTPResult{Method: command.Method},
+		Hops:          []domain.ObservedHop{},
+		Issues:        []domain.ProbeIssue{},
+	}
+	if !command.Method.IsValid() {
+		return result, fmt.Errorf("unsupported probe method %q", command.Method)
 	}
 	runtime, err := s.probeGatewayRuntime(command.GatewayID)
 	if err != nil {
@@ -42,14 +51,14 @@ func (s *Store) ExecuteProbe(ctx context.Context, command domain.ProbeCommand) (
 	if err != nil {
 		return result, err
 	}
-	result.Target = redactedProbeTarget(target)
+	result.HTTP.Target = redactedProbeTarget(target)
 	var fileOffset int64
 	if s.probeLogFile != "" {
 		if info, statErr := os.Stat(s.probeLogFile); statErr == nil {
 			fileOffset = info.Size()
 		}
 	}
-	request, err := http.NewRequestWithContext(ctx, command.Method, target, strings.NewReader(command.Body))
+	request, err := http.NewRequestWithContext(ctx, string(command.Method), target, strings.NewReader(command.Body))
 	if err != nil {
 		return result, fmt.Errorf("create probe request: %w", err)
 	}
@@ -71,32 +80,30 @@ func (s *Store) ExecuteProbe(ctx context.Context, command domain.ProbeCommand) (
 	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	response, requestErr := client.Do(request)
 	if requestErr == nil {
-		result.ResponseCode = response.StatusCode
+		result.HTTP.ResponseCode = response.StatusCode
 		read, readErr := io.Copy(io.Discard, io.LimitReader(response.Body, maxProbeResponseBytes+1))
 		_ = response.Body.Close()
-		result.ResponseBytes = read
+		result.HTTP.ResponseBytes = read
 		if readErr != nil {
 			requestErr = fmt.Errorf("read probe response: %w", readErr)
 		} else if read > maxProbeResponseBytes {
-			result.Gaps = append(result.Gaps, "响应正文超过采集上限；正文未保存")
+			result.Issues = domain.AppendProbeIssue(result.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeExecution, Code: domain.ProbeIssueCodeResponseLimitExceeded, Message: "响应正文超过采集上限；正文未保存"})
 		}
 	}
-	result.DurationMillis = time.Since(responseStarted).Milliseconds()
+	result.HTTP.DurationMillis = time.Since(responseStarted).Milliseconds()
 
 	// Access logs are written when the HTTP stream completes. Give the container
 	// runtime a short bounded interval to make the record available.
-	result.Hops, result.LogSource, result.Collection = s.observeProbeWindow(ctx, runtime, started.Add(-time.Second), fileOffset, command.ProbeID, command.TraceID, 2*time.Second)
-	result.Gaps = append(result.Gaps, result.Collection.Reasons...)
+	logs := s.observeProbeWindow(ctx, runtime, started.Add(-time.Second), fileOffset, command.ProbeID, command.TraceID, 2*time.Second)
+	result.Hops, result.Collection = logs.hops, logs.collection
+	result.Issues = append(result.Issues, logs.issues...)
 	if len(result.Hops) == 0 {
-		result.Gaps = append(result.Gaps, "未找到匹配 gatelens_probe_id 或 trace_id 的 Higress JSON 访问日志")
+		result.Issues = domain.AppendProbeIssue(result.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeCollection, Code: domain.ProbeIssueCodeNoMatchingLog, Message: "未找到匹配 gatelens_probe_id 或 trace_id 的 Higress JSON 访问日志"})
 	}
 	sort.SliceStable(result.Hops, func(i, j int) bool { return result.Hops[i].ObservedAt < result.Hops[j].ObservedAt })
-	result.EvidenceComplete = len(result.Hops) > 0
 	result.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	result.State = "completed"
 	if requestErr != nil {
-		result.State = "failed"
-		result.Error = requestErr.Error()
+		result.HTTP.Error = requestErr.Error()
 	}
 	return result, nil
 }
@@ -104,12 +111,12 @@ func (s *Store) ExecuteProbe(ctx context.Context, command domain.ProbeCommand) (
 // ObserveProbe only reads logs from a gateway. It never emits another HTTP
 // request, so one probe can be correlated across gateways without duplicating
 // traffic or side effects.
-func (s *Store) ObserveProbe(ctx context.Context, command domain.ProbeCommand) (domain.ProbeExecution, error) {
+func (s *Store) ObserveProbe(ctx context.Context, command domain.ProbeCommand) (domain.ProbeAgentResult, error) {
 	started := time.Now().UTC()
-	result := domain.ProbeExecution{
-		ID: command.ProbeID, TraceID: command.TraceID,
-		SourceCluster: s.clusterID, GatewayID: command.GatewayID, State: "running",
-		StartedAt: started.Format(time.RFC3339Nano),
+	result := domain.ProbeAgentResult{
+		SchemaVersion: domain.ProbeSchemaVersion, ProbeID: command.ProbeID, TraceID: command.TraceID,
+		ClusterID: s.clusterID, GatewayID: command.GatewayID, StartedAt: started.Format(time.RFC3339Nano),
+		Hops: []domain.ObservedHop{}, Issues: []domain.ProbeIssue{},
 	}
 	runtime, err := s.probeGatewayRuntime(command.GatewayID)
 	if err != nil {
@@ -119,15 +126,14 @@ func (s *Store) ObserveProbe(ctx context.Context, command domain.ProbeCommand) (
 	if parsed, parseErr := time.Parse(time.RFC3339Nano, command.StartedAt); parseErr == nil {
 		since = parsed.Add(-time.Second)
 	}
-	result.Hops, result.LogSource, result.Collection = s.observeProbeWindow(ctx, runtime, since, 0, command.ProbeID, command.TraceID, 4*time.Second)
-	result.Gaps = append(result.Gaps, result.Collection.Reasons...)
+	logs := s.observeProbeWindow(ctx, runtime, since, 0, command.ProbeID, command.TraceID, 4*time.Second)
+	result.Hops, result.Collection = logs.hops, logs.collection
+	result.Issues = append(result.Issues, logs.issues...)
 	if len(result.Hops) == 0 {
-		result.Gaps = append(result.Gaps, "未找到匹配 gatelens_probe_id 或 trace_id 的网关访问日志")
+		result.Issues = domain.AppendProbeIssue(result.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeCollection, Code: domain.ProbeIssueCodeNoMatchingLog, Message: "未找到匹配 gatelens_probe_id 或 trace_id 的网关访问日志"})
 	}
 	sort.SliceStable(result.Hops, func(i, j int) bool { return result.Hops[i].ObservedAt < result.Hops[j].ObservedAt })
-	result.EvidenceComplete = len(result.Hops) > 0
 	result.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	result.State = "completed"
 	return result, nil
 }
 
@@ -138,6 +144,9 @@ func (s *Store) resolveProbeEntry(gatewayID, entryID, path string) (domain.Probe
 	if !ok {
 		return domain.ProbeEntry{}, "", fmt.Errorf("probe entry %q is not present in the current Kubernetes snapshot", entryID)
 	}
+	if !entry.Scheme.IsValid() {
+		return domain.ProbeEntry{}, "", fmt.Errorf("unsupported probe scheme %q", entry.Scheme)
+	}
 	if entry.GatewayID != gatewayID {
 		return domain.ProbeEntry{}, "", fmt.Errorf("probe entry %q does not belong to Gateway %q", entryID, gatewayID)
 	}
@@ -145,7 +154,7 @@ func (s *Store) resolveProbeEntry(gatewayID, entryID, path string) (domain.Probe
 	if err != nil || parsedPath.IsAbs() || parsedPath.Host != "" || !strings.HasPrefix(parsedPath.Path, "/") || parsedPath.Fragment != "" {
 		return domain.ProbeEntry{}, "", fmt.Errorf("probe path must be an absolute HTTP path beginning with /")
 	}
-	target := (&url.URL{Scheme: entry.Scheme, Host: fmt.Sprintf("%s:%d", entry.DNSName, entry.Port), Path: parsedPath.Path, RawPath: parsedPath.RawPath, RawQuery: parsedPath.RawQuery}).String()
+	target := (&url.URL{Scheme: string(entry.Scheme), Host: fmt.Sprintf("%s:%d", entry.DNSName, entry.Port), Path: parsedPath.Path, RawPath: parsedPath.RawPath, RawQuery: parsedPath.RawQuery}).String()
 	return entry, target, nil
 }
 

@@ -33,7 +33,7 @@ func TestRebuildAcrossNamespaces(t *testing.T) {
 	}
 	kinds := map[string]int{}
 	for _, node := range store.Topology().Nodes {
-		kinds[node.Kind]++
+		kinds[string(node.Kind)]++
 	}
 	if kinds["Listener"] != 1 || kinds["Endpoint"] != 1 {
 		t.Fatalf("topology kinds=%v", kinds)
@@ -128,7 +128,7 @@ func TestInferencePoolBuildsEndpointPickerServiceEndpointChain(t *testing.T) {
 	}
 }
 
-func hasNode(topology domain.Topology, kind, name string) bool {
+func hasNode(topology domain.Topology, kind domain.TopologyNodeKind, name string) bool {
 	for _, node := range topology.Nodes {
 		if node.Kind == kind && node.Name == name {
 			return true

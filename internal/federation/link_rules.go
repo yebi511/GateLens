@@ -51,9 +51,9 @@ func discoverLinksWithRules(nodes []domain.TopologyNode, existing []domain.Topol
 		if keys := entryKeys(node); len(keys) > 0 {
 			rank := 2
 			switch node.Kind {
-			case "Listener":
+			case domain.TopologyNodeKindListener:
 				rank = 0
-			case "Gateway":
+			case domain.TopologyNodeKindGateway:
 				rank = 1
 			}
 			ctx.entries = append(ctx.entries, linkCandidate{node: node, keys: keys, rank: rank, evidence: entryEvidence(node)})
@@ -94,7 +94,7 @@ type higressMCPBridgeLinkRule struct{}
 func (higressMCPBridgeLinkRule) name() string { return "higress-mcpbridge" }
 
 func (higressMCPBridgeLinkRule) match(from linkCandidate, ctx linkRuleContext) (linkRuleResult, bool) {
-	if from.node.Kind != "Registry" || from.node.Source != "McpBridge.spec.registries" {
+	if from.node.Kind != domain.TopologyNodeKindRegistry || from.node.Source != "McpBridge.spec.registries" {
 		return linkRuleResult{}, false
 	}
 
@@ -118,7 +118,7 @@ func ingressSelectingRegistry(registry domain.TopologyNode, ctx linkRuleContext)
 			continue
 		}
 		node, ok := ctx.nodesByID[edge.From]
-		if ok && node.Kind == "Ingress" && node.ClusterID == registry.ClusterID {
+		if ok && node.Kind == domain.TopologyNodeKindIngress && node.ClusterID == registry.ClusterID {
 			return node, true
 		}
 	}

@@ -8,17 +8,21 @@ import (
 	"github.com/gatelens/gatelens/internal/domain"
 )
 
-func appendUnique(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
+// attemptGroup is an internal request context, never a wire object.
+type attemptGroup struct {
+	ID                   string
+	RuntimeSource        string
+	HopIDs               []string
+	RelationState        domain.ProbeAttemptRelationState
+	OrderBasis           domain.ProbeOrderBasis
+	Links                []domain.ProbeAttemptLink
+	TerminalCandidateIDs []string
+	LocalTerminalHopID   string
+	Issues               []domain.ProbeIssue
 }
 
-// AttemptGroups links only comparable occurrences within one gateway runtime.
-func AttemptGroups(hops []domain.ObservedHop, collection *domain.ProbeCollection) []domain.ProbeAttemptGroup {
+// attemptGroups links only comparable occurrences within one gateway runtime.
+func attemptGroups(hops []domain.ObservedHop, collection *domain.ProbeCollection, issues []domain.ProbeIssue) []attemptGroup {
 	var buckets [][]domain.ObservedHop
 	indices := map[string]int{}
 	for _, hop := range hops {
@@ -35,34 +39,39 @@ func AttemptGroups(hops []domain.ObservedHop, collection *domain.ProbeCollection
 		}
 		buckets[index] = append(buckets[index], hop)
 	}
-	groups := make([]domain.ProbeAttemptGroup, 0, len(buckets))
+	groups := make([]attemptGroup, 0, len(buckets))
 	for index, records := range buckets {
-		group := domain.ProbeAttemptGroup{ID: fmt.Sprintf("group-%d", index+1), RuntimeSource: records[0].RuntimeSource, RelationState: "unconfirmed", OrderBasis: "unavailable", Gaps: []string{}}
+		group := attemptGroup{ID: fmt.Sprintf("context-%d", index+1), RuntimeSource: records[0].RuntimeSource, RelationState: domain.ProbeAttemptRelationStateUnconfirmed, OrderBasis: domain.ProbeOrderBasisUnavailable, Issues: []domain.ProbeIssue{}}
 		ordered := true
+		identityIncomplete := false
 		sequences := map[int]bool{}
 		for _, hop := range records {
+			if hop.RuntimeSource == "" || hop.RequestStartTime == "" || validLogValue(hop.DownstreamRemoteAddress) == "" {
+				identityIncomplete = true
+			}
 			if hop.RuntimeSource == "" || hop.LogSourceID == "" || hop.LogSequence <= 0 || hop.RequestStartTime == "" || validLogValue(hop.DownstreamRemoteAddress) == "" || hop.LogSourceID != records[0].LogSourceID || sequences[hop.LogSequence] {
 				ordered = false
 			}
 			sequences[hop.LogSequence] = true
 		}
-		if collection != nil {
-			for _, reason := range collection.Reasons {
-				if strings.Contains(reason, "连续性") || strings.Contains(reason, "顺序") {
-					ordered = false
-				}
+		for _, issue := range issues {
+			if issue.BreaksLogOrder() {
+				ordered = false
 			}
 		}
 		if ordered {
 			sort.SliceStable(records, func(i, j int) bool { return records[i].LogSequence < records[j].LogSequence })
-			group.OrderBasis = "source-sequence"
-		} else if len(records) > 1 || records[0].InternalRedirect || IsInternalRedirect(records[0].ResponseCodeDetails) {
-			group.Gaps = appendUnique(group.Gaps, "运行时身份或日志来源顺序不足，尝试关系未确认")
+			group.OrderBasis = domain.ProbeOrderBasisSourceSequence
+		} else {
+			if identityIncomplete {
+				group.Issues = domain.AppendProbeIssue(group.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeRelation, Code: domain.ProbeIssueCodeRequestIdentityIncomplete, ContextID: group.ID, Message: "运行时或原始请求身份不完整"})
+			}
+			group.Issues = domain.AppendProbeIssue(group.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeRelation, Code: domain.ProbeIssueCodeAttemptOrderUnconfirmed, ContextID: group.ID, Message: "运行时身份或日志来源顺序不足，尝试关系未确认"})
 		}
 		redirects := 0
 		for _, hop := range records {
 			group.HopIDs = append(group.HopIDs, hop.ID)
-			if hop.InternalRedirect || IsInternalRedirect(hop.ResponseCodeDetails) {
+			if hop.InternalRedirect {
 				redirects++
 			} else {
 				group.TerminalCandidateIDs = append(group.TerminalCandidateIDs, hop.ID)
@@ -72,32 +81,32 @@ func AttemptGroups(hops []domain.ObservedHop, collection *domain.ProbeCollection
 		invalidOrder := false
 		if ordered {
 			for i, hop := range records {
-				if i < len(records)-1 && !hop.InternalRedirect && !IsInternalRedirect(hop.ResponseCodeDetails) {
+				if i < len(records)-1 && !hop.InternalRedirect {
 					invalidOrder = true
 				}
 			}
 		}
 		if terminalCount > 1 || invalidOrder {
-			group.RelationState = "ambiguous"
-			group.Gaps = appendUnique(group.Gaps, "存在多个终止候选或重入记录，最终尝试归属未确认")
+			group.RelationState = domain.ProbeAttemptRelationStateAmbiguous
+			group.Issues = domain.AppendProbeIssue(group.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeRelation, Code: domain.ProbeIssueCodeTerminalAmbiguous, ContextID: group.ID, Message: "存在多个终止候选或重入记录，最终尝试归属未确认"})
 		} else {
 			if ordered && redirects > 0 {
 				for i, hop := range records {
-					if i+1 < len(records) && (hop.InternalRedirect || IsInternalRedirect(hop.ResponseCodeDetails)) {
+					if i+1 < len(records) && (hop.InternalRedirect) {
 						group.Links = append(group.Links, domain.ProbeAttemptLink{From: hop.ID, To: records[i+1].ID})
 					}
 				}
 			}
-			if redirects > 0 && (terminalCount == 0 || (ordered && (records[len(records)-1].InternalRedirect || IsInternalRedirect(records[len(records)-1].ResponseCodeDetails)))) {
-				group.RelationState = "missing-next"
-				group.Gaps = appendUnique(group.Gaps, "已发生内部重定向，后续尝试记录缺失")
+			if redirects > 0 && (terminalCount == 0 || (ordered && (records[len(records)-1].InternalRedirect))) {
+				group.RelationState = domain.ProbeAttemptRelationStateMissingNext
+				group.Issues = domain.AppendProbeIssue(group.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeRelation, Code: domain.ProbeIssueCodeRedirectNextMissing, ContextID: group.ID, Message: "已发生内部重定向，后续尝试记录缺失"})
 			} else if ordered && (redirects > 0 || len(records) == 1) {
-				group.RelationState = "linked"
+				group.RelationState = domain.ProbeAttemptRelationStateLinked
 			} else if len(records) > 1 {
-				group.Gaps = appendUnique(group.Gaps, "同请求多条记录，关系未确认")
+				group.Issues = domain.AppendProbeIssue(group.Issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeRelation, Code: domain.ProbeIssueCodeAttemptOrderUnconfirmed, ContextID: group.ID, Message: "同请求多条记录，关系未确认"})
 			}
 		}
-		if group.RelationState == "linked" && terminalCount == 1 && collection != nil && collection.State == "settled" && len(collection.Reasons) == 0 {
+		if group.RelationState == domain.ProbeAttemptRelationStateLinked && terminalCount == 1 && collection != nil && collection.State == domain.ProbeCollectionStateSettled && len(issues) == 0 {
 			group.LocalTerminalHopID = group.TerminalCandidateIDs[0]
 		}
 		groups = append(groups, group)
@@ -105,101 +114,98 @@ func AttemptGroups(hops []domain.ObservedHop, collection *domain.ProbeCollection
 	return groups
 }
 
-// EnrichProbe adds observation semantics without changing the Agent HTTP result
-// or the legacy gateway-coverage EvidenceComplete flag.
+// EnrichProbe computes relationships without copying records or overriding the HTTP result.
 func EnrichProbe(execution domain.ProbeExecution) domain.ProbeExecution {
 	execution.FinalResponseHopID, execution.FinalUpstreamHopID = "", ""
-	summary := &domain.ProbeRedirectSummary{ProcessState: "observed"}
-	execution.RedirectSummary = summary
-	execution.Hops = nil
-	byID := map[string]domain.ObservedHop{}
+	if execution.Segments == nil {
+		execution.Segments = []domain.ProbeSegment{}
+	}
+	if execution.Issues == nil {
+		execution.Issues = []domain.ProbeIssue{}
+	}
 	for segmentIndex := range execution.Segments {
 		segment := &execution.Segments[segmentIndex]
-		if segment.Collection == nil {
-			segment.Collection = &domain.ProbeCollection{State: "unknown"}
+		if segment.Hops == nil {
+			segment.Hops = []domain.ObservedHop{}
 		}
+		if segment.Collection == nil {
+			segment.Collection = &domain.ProbeCollection{State: domain.ProbeCollectionStateUnknown}
+		}
+		// Analysis may be repeated: rebuild relation issues and references, retain collection facts.
+		issues := []domain.ProbeIssue{}
+		for _, issue := range segment.Issues {
+			if issue.Scope != domain.ProbeIssueScopeRelation {
+				if issue.HopID != "" && !strings.HasPrefix(issue.HopID, segment.GatewayID+"/") {
+					issue.HopID = segment.GatewayID + "/" + issue.HopID
+				}
+				issues = domain.AppendProbeIssue(issues, issue)
+			}
+		}
+		segment.Issues = issues
+		segment.Links = []domain.ProbeAttemptLink{}
+		segment.LocalTerminalHopIDs = []string{}
+		segment.RelationState = domain.ProbeAttemptRelationStateLinked
+		byID := map[string]*domain.ObservedHop{}
 		for hopIndex := range segment.Hops {
 			hop := &segment.Hops[hopIndex]
-			// Agent numbering is scoped to its command; prefix it by gateway.
 			if hop.ID == "" {
-				hop.ID = fmt.Sprintf("legacy-%d", hopIndex+1)
+				hop.ID = fmt.Sprintf("record-%d", hopIndex+1)
 			}
 			prefix := segment.GatewayID + "/"
 			if !strings.HasPrefix(hop.ID, prefix) {
 				hop.ID = prefix + hop.ID
 			}
-			hop.InternalRedirect = IsInternalRedirect(hop.ResponseCodeDetails)
-			if hop.AIRouting == nil {
-				hop.AIRouting = parseAIRouting(hop.AILog)
-			}
-			if hop.InternalRedirect {
-				summary.ObservedRedirects++
-			}
-			byID[hop.ID] = *hop
+			byID[hop.ID] = hop
 		}
-		segment.AttemptGroups = AttemptGroups(segment.Hops, segment.Collection)
-		for _, group := range segment.AttemptGroups {
-			summary.LinkedRedirects += len(group.Links)
-			for _, gap := range group.Gaps {
-				segment.Gaps = appendUnique(segment.Gaps, gap)
-			}
+		groups := attemptGroups(segment.Hops, segment.Collection, segment.Issues)
+		if len(groups) == 0 {
+			segment.RelationState = domain.ProbeAttemptRelationStateUnconfirmed
 		}
-		for _, reason := range segment.Collection.Reasons {
-			segment.Gaps = appendUnique(segment.Gaps, reason)
-		}
-		if len(segment.Hops) == 0 || segment.Collection.State == "window-ended" || segment.Collection.State == "cancelled" || segment.Collection.State == "read-error" || len(segment.Gaps) > 0 {
-			summary.ProcessState = "partial"
-		}
-		execution.Hops = append(execution.Hops, segment.Hops...)
-		for _, gap := range segment.Gaps {
-			execution.Gaps = appendUnique(execution.Gaps, segment.ClusterID+"/"+segment.GatewayName+": "+gap)
-		}
-	}
-	unknown, ambiguous := false, false
-	for _, segment := range execution.Segments {
-		if segment.Collection.State == "unknown" {
-			unknown = true
-		}
-		for _, group := range segment.AttemptGroups {
-			if group.RelationState == "ambiguous" {
-				ambiguous = true
-			}
-			if group.RelationState == "unconfirmed" {
-				unknown = true
-			}
-		}
-	}
-	if unknown {
-		summary.ProcessState = "unknown"
-	}
-	if ambiguous {
-		summary.ProcessState = "ambiguous"
-	}
-	// A source response can be attributed only under a single unambiguous
-	// runtime group with a settled exact-probe observation.
-	if execution.State == "completed" && execution.Error == "" && execution.ResponseCode > 0 {
-		for _, segment := range execution.Segments {
-			if segment.GatewayID != execution.GatewayID || len(segment.AttemptGroups) != 1 || len(segment.Gaps) > 0 {
-				continue
-			}
-			group := segment.AttemptGroups[0]
-			hop, exists := byID[group.LocalTerminalHopID]
-			exact := true
+		for _, group := range groups {
 			for _, id := range group.HopIDs {
-				if byID[id].Correlation != "probe-id" {
-					exact = false
-				}
+				byID[id].ContextID = group.ID
 			}
-			if exists && exact && hop.ResponseCode == execution.ResponseCode {
-				execution.FinalResponseHopID = hop.ID
-				if len(execution.Segments) == 1 && len(execution.Gaps) == 0 {
-					execution.FinalUpstreamHopID = hop.ID
-				}
+			segment.Links = append(segment.Links, group.Links...)
+			if group.LocalTerminalHopID != "" {
+				segment.LocalTerminalHopIDs = append(segment.LocalTerminalHopIDs, group.LocalTerminalHopID)
+			}
+			for _, issue := range group.Issues {
+				segment.Issues = domain.AppendProbeIssue(segment.Issues, issue)
+			}
+			if relationRank(group.RelationState) > relationRank(segment.RelationState) {
+				segment.RelationState = group.RelationState
 			}
 		}
-	}
-	if execution.Collection == nil {
-		execution.Collection = &domain.ProbeCollection{State: "unknown"}
+		if execution.State != domain.ProbeExecutionStateCompleted || execution.Error != "" || execution.ResponseCode <= 0 || segment.GatewayID != execution.GatewayID || len(groups) != 1 || len(segment.Issues) > 0 {
+			continue
+		}
+		group := groups[0]
+		hop := byID[group.LocalTerminalHopID]
+		exact := true
+		for _, id := range group.HopIDs {
+			if byID[id].Correlation != domain.ProbeCorrelationProbeID {
+				exact = false
+			}
+		}
+		if hop != nil && exact && hop.ResponseCode == execution.ResponseCode {
+			execution.FinalResponseHopID = hop.ID
+			if len(execution.Segments) == 1 && len(execution.Issues) == 0 {
+				execution.FinalUpstreamHopID = hop.ID
+			}
+		}
 	}
 	return execution
+}
+
+func relationRank(state domain.ProbeAttemptRelationState) int {
+	switch state {
+	case domain.ProbeAttemptRelationStateAmbiguous:
+		return 3
+	case domain.ProbeAttemptRelationStateUnconfirmed:
+		return 2
+	case domain.ProbeAttemptRelationStateMissingNext:
+		return 1
+	default:
+		return 0
+	}
 }

@@ -35,16 +35,18 @@ type probeLogSourceCache struct {
 type probeLogCache struct {
 	sources map[string]*probeLogSourceCache
 	hops    []domain.ObservedHop
-	reasons []string
+	issues  []domain.ProbeIssue
 }
 
-func (cache *probeLogCache) addReason(reason string) {
-	for _, existing := range cache.reasons {
-		if existing == reason {
-			return
-		}
-	}
-	cache.reasons = append(cache.reasons, reason)
+func (cache *probeLogCache) addIssue(code domain.ProbeIssueCode, message string) {
+	cache.issues = domain.AppendProbeIssue(cache.issues, domain.ProbeIssue{Scope: domain.ProbeIssueScopeCollection, Code: code, Message: message})
+}
+
+// probeLogResult carries one gateway's bounded collection without duplicating reasons.
+type probeLogResult struct {
+	hops       []domain.ObservedHop
+	collection *domain.ProbeCollection
+	issues     []domain.ProbeIssue
 }
 
 // merge preserves occurrences, rather than deduplicating by timestamp or Route.
@@ -60,12 +62,12 @@ func (cache *probeLogCache) merge(snapshot probeLogSnapshot, probeID, traceID, c
 	if snapshot.fileInfo != nil && source.fileInfo != nil && (!os.SameFile(snapshot.fileInfo, source.fileInfo) || snapshot.fileInfo.Size() < source.fileInfo.Size()) {
 		source.generation++
 		source.uncertain = true
-		cache.addReason("访问日志文件发生轮转或截断，来源连续性未确认")
+		cache.addIssue(domain.ProbeIssueCodeLogSourceRotated, "访问日志文件发生轮转或截断，来源连续性未确认")
 	}
 	source.fileInfo = snapshot.fileInfo
 	if snapshot.incomplete {
 		source.uncertain = true
-		cache.addReason("日志读取窗口被截断，来源连续性未确认")
+		cache.addIssue(domain.ProbeIssueCodeLogWindowTruncated, "日志读取窗口被截断，来源连续性未确认")
 	}
 	occurrences := map[[32]byte]int{}
 	var current []string
@@ -116,7 +118,7 @@ func (cache *probeLogCache) merge(snapshot probeLogSnapshot, probeID, traceID, c
 		}
 		if !prefix {
 			source.uncertain = true
-			cache.addReason("日志快照发生截断或重叠无法定位，来源顺序未确认")
+			cache.addIssue(domain.ProbeIssueCodeLogOrderUnconfirmed, "日志快照发生截断或重叠无法定位，来源顺序未确认")
 		}
 	}
 	source.previous = current
@@ -124,8 +126,13 @@ func (cache *probeLogCache) merge(snapshot probeLogSnapshot, probeID, traceID, c
 }
 
 func (cache *probeLogCache) canSettle() bool {
-	if len(cache.hops) == 0 || len(cache.reasons) != 0 {
+	if len(cache.hops) == 0 {
 		return false
+	}
+	for _, issue := range cache.issues {
+		if issue.BreaksLogOrder() {
+			return false
+		}
 	}
 	groups := map[string][]domain.ObservedHop{}
 	for _, hop := range cache.hops {
@@ -155,26 +162,25 @@ func usableAddress(value string) bool {
 
 type probeLogReader func(context.Context) ([]probeLogSnapshot, error)
 
-func collectProbeWindow(ctx context.Context, read probeLogReader, probeID, traceID, clusterID string, window, interval, settle time.Duration) ([]domain.ObservedHop, *domain.ProbeCollection) {
+func collectProbeWindow(ctx context.Context, read probeLogReader, probeID, traceID, clusterID string, window, interval, settle time.Duration) probeLogResult {
 	windowCtx, cancel := context.WithTimeout(ctx, window)
 	defer cancel()
-	cache := &probeLogCache{}
-	collection := &domain.ProbeCollection{State: "window-ended"}
+	cache := &probeLogCache{hops: []domain.ObservedHop{}, issues: []domain.ProbeIssue{}}
+	collection := &domain.ProbeCollection{State: domain.ProbeCollectionStateWindowEnded}
 	var stableSince time.Time
-	finish := func(state string, reason string) ([]domain.ObservedHop, *domain.ProbeCollection) {
+	finish := func(state domain.ProbeCollectionState, code domain.ProbeIssueCode, reason string) probeLogResult {
 		collection.State, collection.CompletedAt = state, time.Now().UTC().Format(time.RFC3339Nano)
 		if reason != "" {
-			cache.addReason(reason)
+			cache.addIssue(code, reason)
 		}
-		collection.Reasons = append([]string(nil), cache.reasons...)
-		return cache.hops, collection
+		return probeLogResult{hops: cache.hops, collection: collection, issues: cache.issues}
 	}
 	for {
 		if windowCtx.Err() != nil {
 			if ctx.Err() != nil {
-				return finish("cancelled", "日志采集已取消："+ctx.Err().Error())
+				return finish(domain.ProbeCollectionStateCancelled, domain.ProbeIssueCodeCollectionCancelled, "日志采集已取消："+ctx.Err().Error())
 			}
-			return finish("window-ended", "日志采集窗口已结束，未确认稳定终止记录")
+			return finish(domain.ProbeCollectionStateWindowEnded, domain.ProbeIssueCodeCollectionWindowEnded, "日志采集窗口已结束，未确认稳定终止记录")
 		}
 		snapshots, err := read(windowCtx)
 		changed := false
@@ -187,15 +193,15 @@ func collectProbeWindow(ctx context.Context, read probeLogReader, probeID, trace
 		// observation deadline (even if a reader returns a nil error).
 		if windowCtx.Err() != nil {
 			if ctx.Err() != nil {
-				return finish("cancelled", "日志采集已取消："+ctx.Err().Error())
+				return finish(domain.ProbeCollectionStateCancelled, domain.ProbeIssueCodeCollectionCancelled, "日志采集已取消："+ctx.Err().Error())
 			}
-			return finish("window-ended", "日志采集窗口已结束，读取受剩余时间限制")
+			return finish(domain.ProbeCollectionStateWindowEnded, domain.ProbeIssueCodeCollectionWindowEnded, "日志采集窗口已结束，读取受剩余时间限制")
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return finish("cancelled", "日志采集已取消："+ctx.Err().Error())
+				return finish(domain.ProbeCollectionStateCancelled, domain.ProbeIssueCodeCollectionCancelled, "日志采集已取消："+ctx.Err().Error())
 			}
-			return finish("read-error", err.Error())
+			return finish(domain.ProbeCollectionStateReadError, domain.ProbeIssueCodeLogReadError, err.Error())
 		}
 		if changed || !cache.canSettle() {
 			stableSince = time.Time{}
@@ -204,7 +210,7 @@ func collectProbeWindow(ctx context.Context, read probeLogReader, probeID, trace
 			if stableSince.IsZero() {
 				stableSince = time.Now()
 			} else if time.Since(stableSince) >= settle {
-				return finish("settled", "")
+				return finish(domain.ProbeCollectionStateSettled, "", "")
 			}
 		}
 		timer := time.NewTimer(interval)
@@ -216,7 +222,7 @@ func collectProbeWindow(ctx context.Context, read probeLogReader, probeID, trace
 	}
 }
 
-func (s *Store) observeProbeWindow(ctx context.Context, runtime gatewayRuntime, since time.Time, fileOffset int64, probeID, traceID string, window time.Duration) ([]domain.ObservedHop, string, *domain.ProbeCollection) {
+func (s *Store) observeProbeWindow(ctx context.Context, runtime gatewayRuntime, since time.Time, fileOffset int64, probeID, traceID string, window time.Duration) probeLogResult {
 	logSource := "kubernetes-pod-log"
 	if s.probeLogFile != "" {
 		logSource = "file:" + s.probeLogFile
@@ -273,7 +279,12 @@ func (s *Store) observeProbeWindow(ctx context.Context, runtime gatewayRuntime, 
 				content = content[:maxProbeLogBytes]
 			}
 			identity := s.clusterID + "/" + pod.Namespace + "/" + pod.Name + "/" + string(pod.UID) + "/" + pod.Container
-			snapshots = append(snapshots, probeLogSnapshot{source: identity, runtime: identity, pod: pod.Namespace + "/" + pod.Name, content: string(content), incomplete: incomplete})
+			snapshots = append(snapshots, probeLogSnapshot{
+				source:     identity,
+				runtime:    identity,
+				pod:        pod.Namespace + "/" + pod.Name,
+				content:    string(content),
+				incomplete: incomplete})
 			if err != nil {
 				readErrors = append(readErrors, fmt.Sprintf("%s/%s: %v", pod.Namespace, pod.Name, err))
 			}
@@ -283,6 +294,5 @@ func (s *Store) observeProbeWindow(ctx context.Context, runtime gatewayRuntime, 
 		}
 		return snapshots, nil
 	}
-	hops, collection := collectProbeWindow(ctx, read, probeID, traceID, s.clusterID, window, 200*time.Millisecond, 500*time.Millisecond)
-	return hops, logSource, collection
+	return collectProbeWindow(ctx, read, probeID, traceID, s.clusterID, window, 200*time.Millisecond, 500*time.Millisecond)
 }

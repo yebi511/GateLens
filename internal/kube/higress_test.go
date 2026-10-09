@@ -54,7 +54,7 @@ func TestHigressIngressMcpBridge(t *testing.T) {
 	requireNode(t, store.Topology(), "Registry", "github")
 	requireNode(t, store.Topology(), "ExternalTarget", "api.github.com")
 	for _, node := range store.Topology().Nodes {
-		if node.Kind == "Registry" && node.Name == "github" {
+		if node.Kind == domain.TopologyNodeKindRegistry && node.Name == "github" {
 			if !hasCondition(node.Conditions, "Protocol=https") {
 				t.Fatalf("registry conditions=%#v", node.Conditions)
 			}
@@ -169,7 +169,7 @@ func TestNginxIngressProvidesRemoteEntryKeysWithoutHigressCRD(t *testing.T) {
 	store.rebuild(stores...)
 
 	for _, node := range store.Topology().Nodes {
-		if node.Kind != "Ingress" || node.Name != "inference-gateway-ingress" {
+		if node.Kind != domain.TopologyNodeKindIngress || node.Name != "inference-gateway-ingress" {
 			continue
 		}
 		for _, condition := range []string{
@@ -280,7 +280,7 @@ func addReadyHigressGateway(t *testing.T, stores []cache.Store, namespace string
 	})
 }
 
-func requireNode(t *testing.T, topology domain.Topology, kind, name string) {
+func requireNode(t *testing.T, topology domain.Topology, kind domain.TopologyNodeKind, name string) {
 	t.Helper()
 	for _, node := range topology.Nodes {
 		if node.Kind == kind && node.Name == name {

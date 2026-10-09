@@ -239,7 +239,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		}
 		gatewayID := "gateway/" + obj.GetNamespace() + "/" + obj.GetName()
 		gateways[obj.GetNamespace()+"/"+obj.GetName()] = gatewayID
-		snap.topology.Nodes = append(snap.topology.Nodes, node(s.clusterID, gatewayID, obj, "Gateway", domain.StatusHealthy, "已发现", "Gateway API 配置对象。"))
+		snap.topology.Nodes = append(snap.topology.Nodes, node(s.clusterID, gatewayID, obj, domain.TopologyNodeKindGateway, domain.StatusHealthy, "已发现", "Gateway API 配置对象。"))
 		gatewayNodeIndex := len(snap.topology.Nodes) - 1
 		snap.topology.Nodes[gatewayNodeIndex].Conditions = append(
 			snap.topology.Nodes[gatewayNodeIndex].Conditions, gatewayAddressConditions(obj)...,
@@ -255,7 +255,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 			protocol := stringValue(listener, "protocol", "unknown")
 			port := fmt.Sprint(listener["port"])
 			hostname := stringValue(listener, "hostname", "*")
-			snap.topology.Nodes = append(snap.topology.Nodes, domain.TopologyNode{ID: id, Name: name, Kind: "Listener", Namespace: obj.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: protocol + " " + hostname + ":" + port, Conditions: []string{"Protocol=" + protocol, "Hostname=" + hostname}, Source: "Gateway.spec.listeners"})
+			snap.topology.Nodes = append(snap.topology.Nodes, domain.TopologyNode{ID: id, Name: name, Kind: domain.TopologyNodeKindListener, Namespace: obj.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: protocol + " " + hostname + ":" + port, Conditions: []string{"Protocol=" + protocol, "Hostname=" + hostname}, Source: "Gateway.spec.listeners"})
 			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: gatewayID, To: id, Relation: "owns"})
 		}
 	}
@@ -270,7 +270,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 		}
 		routeID := "route/" + obj.GetNamespace() + "/" + obj.GetName()
 		hostnames, _, _ := unstructured.NestedStringSlice(obj.Object, "spec", "hostnames")
-		routeNode := node(s.clusterID, routeID, obj, "HTTPRoute", domain.StatusHealthy, "已发现", "HTTP 路由；Host: "+strings.Join(hostnames, ", "))
+		routeNode := node(s.clusterID, routeID, obj, domain.TopologyNodeKindHTTPRoute, domain.StatusHealthy, "已发现", "HTTP 路由；Host: "+strings.Join(hostnames, ", "))
 		snap.topology.Nodes = append(snap.topology.Nodes, routeNode)
 		parents, _, _ := unstructured.NestedSlice(obj.Object, "spec", "parentRefs")
 		for _, raw := range parents {
@@ -304,7 +304,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 	if ingressStore != nil && mcpBridgeStore != nil {
 		serviceRefs := map[string]*networkingService{}
 		for key, svc := range services {
-			serviceRefs[key] = &networkingService{node: domain.TopologyNode{ID: "service/" + key, Name: svc.Name, Kind: "Service", Namespace: svc.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: fmt.Sprintf("Service 有 %d 个 Ready Endpoint。", ready[key]), Conditions: []string{fmt.Sprintf("ReadyEndpoints=%d", ready[key])}, Source: "v1 Service"}, readyEndpoints: ready[key]}
+			serviceRefs[key] = &networkingService{node: domain.TopologyNode{ID: "service/" + key, Name: svc.Name, Kind: domain.TopologyNodeKindService, Namespace: svc.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: fmt.Sprintf("Service 有 %d 个 Ready Endpoint。", ready[key]), Conditions: []string{fmt.Sprintf("ReadyEndpoints=%d", ready[key])}, Source: "v1 Service"}, readyEndpoints: ready[key]}
 			if svc.Spec.Type == corev1.ServiceTypeExternalName && svc.Spec.ExternalName != "" {
 				serviceRefs[key].external = true
 				serviceRefs[key].node.StatusText = "Configured"
@@ -324,7 +324,7 @@ func (s *Store) rebuild(stores ...cache.Store) {
 	snap.topology.SnapshotID = snap.context.Snapshot.ID
 	snap.topology.ObservedAt = now
 	snap.resources = resourcesFromNodes(snap.topology.Nodes, snap.findings)
-	snap.topology.Consistency = "single-cluster"
+	snap.topology.Consistency = domain.SnapshotConsistencySingleCluster
 	snap.topology.Clusters = []domain.TopologyCluster{{
 		ID: s.clusterID, Name: s.clusterID, Version: "Kubernetes",
 		ConnectionState: "connected", Namespaces: append([]string(nil), snap.context.Namespaces...), Snapshot: snap.context.Snapshot,
@@ -380,7 +380,7 @@ func (s *Store) addBackends(snap *snapshot, obj *unstructured.Unstructured, rout
 			transitID := "transit/" + key
 			ids = append(ids, transitID)
 			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-				ID: transitID, Name: svc.Name, Kind: "TransitHop", Namespace: svc.Namespace,
+				ID: transitID, Name: svc.Name, Kind: domain.TopologyNodeKindTransitHop, Namespace: svc.Namespace,
 				ClusterID: s.clusterID, Status: status, StatusText: text,
 				Summary:    "ExternalName Service forwards to " + svc.Spec.ExternalName + ".",
 				Conditions: []string{"ExternalName=" + svc.Spec.ExternalName, "Destination=" + svc.Spec.ExternalName},
@@ -402,7 +402,7 @@ func (s *Store) addBackends(snap *snapshot, obj *unstructured.Unstructured, rout
 		}
 		backendID := "service/" + key
 		ids = append(ids, backendID)
-		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: backendID, Name: svc.Name, Kind: "Service", Namespace: svc.Namespace, ClusterID: s.clusterID, Status: status, StatusText: text, Summary: summary, Conditions: []string{fmt.Sprintf("ReadyEndpoints=%d", ready[key])}, Source: "v1 Service"})
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: backendID, Name: svc.Name, Kind: domain.TopologyNodeKindService, Namespace: svc.Namespace, ClusterID: s.clusterID, Status: status, StatusText: text, Summary: summary, Conditions: []string{fmt.Sprintf("ReadyEndpoints=%d", ready[key])}, Source: "v1 Service"})
 		snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: routeID, To: backendID, Relation: "routes"})
 		for _, endpoint := range endpoints[key] {
 			snap.topology.Nodes = appendUnique(snap.topology.Nodes, endpoint)
@@ -411,7 +411,7 @@ func (s *Store) addBackends(snap *snapshot, obj *unstructured.Unstructured, rout
 	}
 	return ids
 }
-func node(clusterID, id string, obj *unstructured.Unstructured, kind string, status domain.Status, text, summary string) domain.TopologyNode {
+func node(clusterID, id string, obj *unstructured.Unstructured, kind domain.TopologyNodeKind, status domain.Status, text, summary string) domain.TopologyNode {
 	return domain.TopologyNode{ID: id, Name: obj.GetName(), Kind: kind, Namespace: obj.GetNamespace(), ClusterID: clusterID, Status: status, StatusText: text, Summary: summary, Source: obj.GetAPIVersion() + " " + obj.GetKind()}
 }
 func stringValue(values map[string]any, key, fallback string) string {
@@ -454,7 +454,7 @@ func endpointReadiness(items []any, clusterID string) (map[string]int, map[strin
 				}
 				id += address
 				nodes[key] = append(nodes[key], domain.TopologyNode{
-					ID: id, Name: name, Kind: "Endpoint", Namespace: slice.Namespace, ClusterID: clusterID,
+					ID: id, Name: name, Kind: domain.TopologyNodeKindEndpoint, Namespace: slice.Namespace, ClusterID: clusterID,
 					Status: status, StatusText: text, Summary: summary, Conditions: conditions,
 					Source: "discovery.k8s.io/v1 EndpointSlice",
 				})
@@ -588,7 +588,7 @@ func resourcesFromNodes(nodes []domain.TopologyNode, findings []domain.Finding) 
 				count++
 			}
 		}
-		result = append(result, domain.Resource{ID: n.ID, Kind: n.Kind, Name: n.Name, Namespace: n.Namespace, Status: n.Status, StatusText: n.StatusText, UpdatedAt: "当前快照", Findings: count})
+		result = append(result, domain.Resource{ID: n.ID, Kind: string(n.Kind), Name: n.Name, Namespace: n.Namespace, Status: n.Status, StatusText: n.StatusText, UpdatedAt: "当前快照", Findings: count})
 	}
 	return result
 }

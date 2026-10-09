@@ -3,6 +3,8 @@ package kube
 import (
 	"testing"
 
+	"github.com/gatelens/gatelens/internal/domain"
+
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -39,10 +41,10 @@ func TestRebuildCollectsCrossClusterConfigurationEvidence(t *testing.T) {
 
 	var gatewayFound, transitFound bool
 	for _, node := range store.Topology().Nodes {
-		if node.Kind == "Gateway" && hasCondition(node.Conditions, "Address=inference-gw.example") {
+		if node.Kind == domain.TopologyNodeKindGateway && hasCondition(node.Conditions, "Address=inference-gw.example") {
 			gatewayFound = true
 		}
-		if node.Kind == "TransitHop" && hasCondition(node.Conditions, "Destination=inference-gw.example") {
+		if node.Kind == domain.TopologyNodeKindTransitHop && hasCondition(node.Conditions, "Destination=inference-gw.example") {
 			transitFound = true
 			if node.ClusterID != "edge" {
 				t.Fatalf("TransitHop clusterID=%q", node.ClusterID)
@@ -124,7 +126,7 @@ func TestHigressExternalNameDoesNotRequireEndpoints(t *testing.T) {
 		t.Fatalf("findings=%#v", store.Findings())
 	}
 	for _, node := range store.Topology().Nodes {
-		if node.Kind == "Service" && hasCondition(node.Conditions, "ExternalName=inference-gw.example") {
+		if node.Kind == domain.TopologyNodeKindService && hasCondition(node.Conditions, "ExternalName=inference-gw.example") {
 			return
 		}
 	}

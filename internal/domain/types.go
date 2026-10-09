@@ -34,31 +34,32 @@ type Snapshot struct {
 
 // Topology 汇总集群、节点、连线和探测入口，供拓扑接口及跨集群聚合使用。
 type Topology struct {
-	SnapshotID          string            `json:"snapshotID"`
-	FederatedSnapshotID string            `json:"federatedSnapshotID,omitempty"`
-	ObservedAt          string            `json:"observedAt"`
-	Consistency         string            `json:"consistency,omitempty"`
-	Clusters            []TopologyCluster `json:"clusters,omitempty"`
-	Nodes               []TopologyNode    `json:"nodes"`
-	Edges               []TopologyEdge    `json:"edges"`
-	ProbeEntries        []ProbeEntry      `json:"probeEntries,omitempty"`
-	Truncated           bool              `json:"truncated"`
+	SnapshotID          string              `json:"snapshotID"`
+	FederatedSnapshotID string              `json:"federatedSnapshotID,omitempty"`
+	ObservedAt          string              `json:"observedAt"`
+	Consistency         SnapshotConsistency `json:"consistency,omitempty"`
+	Clusters            []TopologyCluster   `json:"clusters,omitempty"`
+	Nodes               []TopologyNode      `json:"nodes"`
+	Edges               []TopologyEdge      `json:"edges"`
+	ProbeEntries        []ProbeEntry        `json:"probeEntries,omitempty"`
+	Truncated           bool                `json:"truncated"`
 }
 
 // ProbeEntry 描述可发起主动探测的网关服务入口，供拓扑展示和探测目标选择。
 type ProbeEntry struct {
-	ID          string   `json:"id"`
-	GatewayID   string   `json:"gatewayID"`
-	ClusterID   string   `json:"clusterID"`
-	Namespace   string   `json:"namespace"`
-	ServiceName string   `json:"serviceName"`
-	DNSName     string   `json:"dnsName"`
-	Port        int32    `json:"port"`
-	Scheme      string   `json:"scheme"`
-	Protocol    string   `json:"protocol"`
-	DisplayName string   `json:"displayName"`
-	Addresses   []string `json:"addresses,omitempty"`
+	ID          string      `json:"id"`
+	GatewayID   string      `json:"gatewayID"`
+	ClusterID   string      `json:"clusterID"`
+	Namespace   string      `json:"namespace"`
+	ServiceName string      `json:"serviceName"`
+	DNSName     string      `json:"dnsName"`
+	Port        int32       `json:"port"`
+	Scheme      ProbeScheme `json:"scheme"`
+	Protocol    string      `json:"protocol"`
+	DisplayName string      `json:"displayName"`
+	Addresses   []string    `json:"addresses,omitempty"`
 }
+
 // TopologyCluster 描述拓扑中的一个集群及其快照，供联邦拓扑标识数据来源。
 type TopologyCluster struct {
 	ID              string   `json:"id"`
@@ -70,19 +71,39 @@ type TopologyCluster struct {
 
 	Snapshot Snapshot `json:"snapshot"`
 }
+
+// TopologyNodeKind 表示拓扑节点的实体类型。
+type TopologyNodeKind string
+
+const (
+	TopologyNodeKindGateway        TopologyNodeKind = "Gateway"
+	TopologyNodeKindListener       TopologyNodeKind = "Listener"
+	TopologyNodeKindHTTPRoute      TopologyNodeKind = "HTTPRoute"
+	TopologyNodeKindIngress        TopologyNodeKind = "Ingress"
+	TopologyNodeKindService        TopologyNodeKind = "Service"
+	TopologyNodeKindEndpoint       TopologyNodeKind = "Endpoint"
+	TopologyNodeKindPod            TopologyNodeKind = "Pod"
+	TopologyNodeKindInferencePool  TopologyNodeKind = "InferencePool"
+	TopologyNodeKindEndpointPicker TopologyNodeKind = "EndpointPicker"
+	TopologyNodeKindMcpBridge      TopologyNodeKind = "McpBridge"
+	TopologyNodeKindRegistry       TopologyNodeKind = "Registry"
+	TopologyNodeKindExternalTarget TopologyNodeKind = "ExternalTarget" // Mcpbridge 的 Registry 域名不是本地 service 的
+	TopologyNodeKindTransitHop     TopologyNodeKind = "TransitHop"     // HttpRoute backend 是 ExternalName 类型的 service
+)
+
 // TopologyNode 表示网关、路由、服务等拓扑实体，供拓扑图和跨集群关联使用。
 type TopologyNode struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Kind          string   `json:"kind"`
-	Namespace     string   `json:"namespace"`
-	ClusterID     string   `json:"clusterID"`
-	Status        Status   `json:"status"`
-	StatusText    string   `json:"statusText"`
-	Summary       string   `json:"summary"`
-	Conditions    []string `json:"conditions"`
-	Source        string   `json:"source"`
-	WorkloadScope string   `json:"workloadScope,omitempty"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Kind          TopologyNodeKind `json:"kind"`
+	Namespace     string           `json:"namespace"`
+	ClusterID     string           `json:"clusterID"`
+	Status        Status           `json:"status"`
+	StatusText    string           `json:"statusText"`
+	Summary       string           `json:"summary"`
+	Conditions    []string         `json:"conditions"`
+	Source        string           `json:"source"`
+	WorkloadScope string           `json:"workloadScope,omitempty"`
 }
 
 // TopologyEdge 表示拓扑实体间的关系及其证据，供拓扑图展示流量路径。
@@ -214,6 +235,7 @@ type EnvoyEndpoint struct {
 	Health  string `json:"health"`
 	Weight  int    `json:"weight"`
 }
+
 // Finding 记录资源诊断发现及依据，供健康发现接口和 Agent 快照使用。
 type Finding struct {
 	ID       string `json:"id"`
@@ -246,101 +268,116 @@ type AgentSnapshot struct {
 	SentAt    string          `json:"sentAt"`
 }
 
-const (
-	AgentCommandEnvoyConfig  = "envoy-config"
-	AgentCommandProbeHTTP    = "probe-http"
-	AgentCommandProbeObserve = "probe-observe"
-)
-
 // ProbeRequest 是创建主动探测的 API 输入，指定入口和待发送的 HTTP 请求。
 type ProbeRequest struct {
-	SourceCluster  string `json:"sourceCluster"`
-	GatewayID      string `json:"gatewayID"`
-	EntryID        string `json:"entryID"`
-	Method         string `json:"method"`
-	Path           string `json:"path"`
-	Host           string `json:"host,omitempty"`
-	APIKey         string `json:"apiKey,omitempty"`
-	ContentType    string `json:"contentType,omitempty"`
-	Body           string `json:"body,omitempty"`
-	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
+	SourceCluster  string          `json:"sourceCluster"`
+	GatewayID      string          `json:"gatewayID"`
+	EntryID        string          `json:"entryID"`
+	Method         ProbeHTTPMethod `json:"method"`
+	Path           string          `json:"path"`
+	Host           string          `json:"host,omitempty"`
+	APIKey         string          `json:"apiKey,omitempty"`
+	ContentType    string          `json:"contentType,omitempty"`
+	Body           string          `json:"body,omitempty"`
+	TimeoutSeconds int             `json:"timeoutSeconds,omitempty"`
 }
 
 // ProbeExecution 记录一次主动探测的响应和观测链路，供探测查询接口返回。
 type ProbeExecution struct {
-	ID                  string                `json:"id"`
-	TraceID             string                `json:"traceID"`
-	SourceCluster       string                `json:"sourceCluster"`
-	GatewayID           string                `json:"gatewayID"`
-	Method              string                `json:"method"`
-	Target              string                `json:"target"`
-	State               string                `json:"state"`
-	StartedAt           string                `json:"startedAt"`
-	CompletedAt         string                `json:"completedAt,omitempty"`
-	ResponseCode        int                   `json:"responseCode,omitempty"`
-	ResponseBytes       int64                 `json:"responseBytes,omitempty"`
-	DurationMillis      int64                 `json:"durationMillis,omitempty"`
-	LogSource           string                `json:"logSource"`
-	Hops                []ObservedHop         `json:"hops"`
-	Segments            []ProbeSegment        `json:"segments,omitempty"`
-	FederatedSnapshotID string                `json:"federatedSnapshotID,omitempty"`
-	SnapshotConsistency string                `json:"snapshotConsistency,omitempty"`
-	Gaps                []string              `json:"gaps"`
-	Error               string                `json:"error,omitempty"`
-	EvidenceComplete    bool                  `json:"evidenceComplete"`
-	Collection          *ProbeCollection      `json:"collection,omitempty"`
-	RedirectSummary     *ProbeRedirectSummary `json:"redirectSummary,omitempty"`
-	FinalResponseHopID  string                `json:"finalResponseHopID,omitempty"`
-	FinalUpstreamHopID  string                `json:"finalUpstreamHopID,omitempty"`
+	SchemaVersion       int                 `json:"schemaVersion"`
+	ID                  string              `json:"id"`
+	TraceID             string              `json:"traceID"`
+	SourceCluster       string              `json:"sourceCluster"`
+	GatewayID           string              `json:"gatewayID"`
+	Method              ProbeHTTPMethod     `json:"method"`
+	Target              string              `json:"target"`
+	State               ProbeExecutionState `json:"state"`
+	StartedAt           string              `json:"startedAt"`
+	CompletedAt         string              `json:"completedAt,omitempty"`
+	ResponseCode        int                 `json:"responseCode,omitempty"`
+	ResponseBytes       int64               `json:"responseBytes,omitempty"`
+	DurationMillis      int64               `json:"durationMillis,omitempty"`
+	Segments            []ProbeSegment      `json:"segments"`
+	FederatedSnapshotID string              `json:"federatedSnapshotID,omitempty"`
+	SnapshotConsistency SnapshotConsistency `json:"snapshotConsistency,omitempty"`
+	Issues              []ProbeIssue        `json:"issues"`
+	Error               string              `json:"error,omitempty"`
+	FinalResponseHopID  string              `json:"finalResponseHopID,omitempty"`
+	FinalUpstreamHopID  string              `json:"finalUpstreamHopID,omitempty"`
 }
 
-// ProbeSegment 表示一次探测经过的一个网关或集群段，供跨集群链路关联。
-type ProbeSegment struct {
-	Index               int                 `json:"index"`
-	ClusterID           string              `json:"clusterID"`
-	GatewayID           string              `json:"gatewayID"`
-	GatewayName         string              `json:"gatewayName,omitempty"`
-	SnapshotID          string              `json:"snapshotID,omitempty"`
-	ObservedAt          string              `json:"observedAt,omitempty"`
-	State               string              `json:"state"`
-	Evidence            string              `json:"evidence"`
-	LogSource           string              `json:"logSource,omitempty"`
-	Transport           string              `json:"transport,omitempty"`
-	Destination         string              `json:"destination,omitempty"`
-	InferenceBasis      string              `json:"inferenceBasis,omitempty"`
-	InferenceConfidence string              `json:"inferenceConfidence,omitempty"`
-	Hops                []ObservedHop       `json:"hops"`
-	Gaps                []string            `json:"gaps"`
-	Collection          *ProbeCollection    `json:"collection,omitempty"`
-	AttemptGroups       []ProbeAttemptGroup `json:"attemptGroups,omitempty"`
+// ProbeAgentResult contains only local facts; HTTP is absent for log-only commands.
+type ProbeAgentResult struct {
+	SchemaVersion int              `json:"schemaVersion"`
+	ProbeID       string           `json:"probeID"`
+	TraceID       string           `json:"traceID"`
+	ClusterID     string           `json:"clusterID"`
+	GatewayID     string           `json:"gatewayID"`
+	StartedAt     string           `json:"startedAt"`
+	CompletedAt   string           `json:"completedAt"`
+	HTTP          *ProbeHTTPResult `json:"http,omitempty"`
+	Hops          []ObservedHop    `json:"hops"`
+	Collection    *ProbeCollection `json:"collection"`
+	Issues        []ProbeIssue     `json:"issues"`
 }
+
+// ProbeHTTPResult is the source Agent's measured response, never inferred from logs.
+type ProbeHTTPResult struct {
+	Method         ProbeHTTPMethod `json:"method"`
+	Target         string          `json:"target"`
+	ResponseCode   int             `json:"responseCode,omitempty"`
+	ResponseBytes  int64           `json:"responseBytes,omitempty"`
+	DurationMillis int64           `json:"durationMillis,omitempty"`
+	Error          string          `json:"error,omitempty"`
+}
+
+// ProbeSegment owns one gateway's records, collection outcome and confirmed relations.
+type ProbeSegment struct {
+	Index               int                       `json:"index"`
+	ClusterID           string                    `json:"clusterID"`
+	GatewayID           string                    `json:"gatewayID"`
+	GatewayName         string                    `json:"gatewayName,omitempty"`
+	SnapshotID          string                    `json:"snapshotID,omitempty"`
+	SnapshotObservedAt  string                    `json:"snapshotObservedAt,omitempty"`
+	LogSource           string                    `json:"logSource,omitempty"`
+	Transport           string                    `json:"transport,omitempty"`
+	Destination         string                    `json:"destination,omitempty"`
+	InferenceBasis      string                    `json:"inferenceBasis,omitempty"`
+	InferenceConfidence ProbeInferenceConfidence  `json:"inferenceConfidence,omitempty"`
+	Hops                []ObservedHop             `json:"hops"`
+	Collection          *ProbeCollection          `json:"collection"`
+	RelationState       ProbeAttemptRelationState `json:"relationState"`
+	Links               []ProbeAttemptLink        `json:"links"`
+	LocalTerminalHopIDs []string                  `json:"localTerminalHopIDs"`
+	Issues              []ProbeIssue              `json:"issues"`
+}
+
+// ProbeCollectionState 表示日志采集窗口的结束状态。
+type ProbeCollectionState string
+
+const (
+	ProbeCollectionStateSettled     ProbeCollectionState = "settled"      // 已观察到稳定终止记录。
+	ProbeCollectionStateWindowEnded ProbeCollectionState = "window-ended" // 采集窗口到期，未确认稳定终止记录。
+	ProbeCollectionStateCancelled   ProbeCollectionState = "cancelled"    // 日志采集已取消。
+	ProbeCollectionStateReadError   ProbeCollectionState = "read-error"   // 日志读取失败。
+	ProbeCollectionStateUnknown     ProbeCollectionState = "unknown"      // 采集状态未确认。
+)
 
 // ProbeCollection 描述日志采集窗口的结束状态；该窗口不代表全部内部流量。
 type ProbeCollection struct {
-	State       string   `json:"state"`
-	CompletedAt string   `json:"completedAt,omitempty"`
-	Reasons     []string `json:"reasons,omitempty"`
+	State       ProbeCollectionState `json:"state"`
+	CompletedAt string               `json:"completedAt,omitempty"`
 }
 
-// ProbeRedirectSummary 汇总探测中观察到的重定向及其关联情况。
-type ProbeRedirectSummary struct {
-	ObservedRedirects int    `json:"observedRedirects"`
-	LinkedRedirects   int    `json:"linkedRedirects"`
-	ProcessState      string `json:"processState"`
-}
+// ProbeAttemptRelationState 表示同一请求尝试中观测跳点的关联状态。
+type ProbeAttemptRelationState string
 
-// ProbeAttemptGroup 将同一运行来源的观测跳点归组，供探测链路还原请求尝试。
-type ProbeAttemptGroup struct {
-	ID                   string             `json:"id"`
-	RuntimeSource        string             `json:"runtimeSource,omitempty"`
-	HopIDs               []string           `json:"hopIDs"`
-	RelationState        string             `json:"relationState"`
-	OrderBasis           string             `json:"orderBasis"`
-	Links                []ProbeAttemptLink `json:"links,omitempty"`
-	TerminalCandidateIDs []string           `json:"terminalCandidateIDs,omitempty"`
-	LocalTerminalHopID   string             `json:"localTerminalHopID,omitempty"`
-	Gaps                 []string           `json:"gaps"`
-}
+const (
+	ProbeAttemptRelationStateLinked      ProbeAttemptRelationState = "linked"       // 已确认尝试关系，包括单条有序访问记录。
+	ProbeAttemptRelationStateUnconfirmed ProbeAttemptRelationState = "unconfirmed"  // 运行时身份或日志顺序不足，尝试关系未确认。
+	ProbeAttemptRelationStateMissingNext ProbeAttemptRelationState = "missing-next" // 已发生内部重定向，后续尝试记录缺失。
+	ProbeAttemptRelationStateAmbiguous   ProbeAttemptRelationState = "ambiguous"    // 存在多个终止候选或重入记录，尝试归属有歧义。
+)
 
 // ProbeAttemptLink 表示同一请求尝试中两个观测跳点之间的关联。
 type ProbeAttemptLink struct {
@@ -358,96 +395,97 @@ type AIRoutingSummary struct {
 
 // ObservedHop 表示从网关访问日志观察到的一跳，供探测链路和证据关联使用。
 type ObservedHop struct {
-	ID                        string               `json:"id,omitempty"`
-	RuntimeSource             string               `json:"runtimeSource,omitempty"`
-	LogSourceID               string               `json:"logSourceID,omitempty"`
-	LogSequence               int                  `json:"logSequence,omitempty"`
-	RequestStartTime          string               `json:"requestStartTime,omitempty"`
-	InternalRedirect          bool                 `json:"internalRedirect,omitempty"`
-	AIRouting                 *AIRoutingSummary    `json:"aiRouting,omitempty"`
-	ObservedAt                string               `json:"observedAt"`
-	ClusterID                 string               `json:"clusterID"`
-	Pod                       string               `json:"pod"`
-	Authority                 string               `json:"authority,omitempty"`
-	Method                    string               `json:"method,omitempty"`
-	Path                      string               `json:"path,omitempty"`
-	Protocol                  string               `json:"protocol,omitempty"`
-	RouteName                 string               `json:"routeName,omitempty"`
-	UpstreamCluster           string               `json:"upstreamCluster,omitempty"`
-	UpstreamHost              string               `json:"upstreamHost,omitempty"`
-	UpstreamLocalAddress      string               `json:"upstreamLocalAddress,omitempty"`
-	DownstreamRemoteAddress   string               `json:"downstreamRemoteAddress,omitempty"`
-	DownstreamLocalAddress    string               `json:"downstreamLocalAddress,omitempty"`
-	ResponseCode              int                  `json:"responseCode,omitempty"`
-	ResponseFlags             string               `json:"responseFlags,omitempty"`
-	ResponseCodeDetails       string               `json:"responseCodeDetails,omitempty"`
-	DurationMillis            int64                `json:"durationMillis,omitempty"`
-	UpstreamServiceTimeMillis int64                `json:"upstreamServiceTimeMillis,omitempty"`
-	UpstreamTransportFailure  string               `json:"upstreamTransportFailureReason,omitempty"`
-	AILog                     string               `json:"aiLog,omitempty"`
-	ExtProcs                  []ExtProcObservation `json:"extProcs,omitempty"`
-	EvidenceSource            string               `json:"evidenceSource"`
-	Correlation               string               `json:"correlation,omitempty"`
-	Confidence                string               `json:"confidence"`
+	ContextID                 string                `json:"contextID"`
+	ID                        string                `json:"id,omitempty"`
+	RuntimeSource             string                `json:"runtimeSource,omitempty"`
+	LogSourceID               string                `json:"logSourceID,omitempty"`
+	LogSequence               int                   `json:"logSequence,omitempty"`
+	RequestStartTime          string                `json:"requestStartTime,omitempty"`
+	InternalRedirect          bool                  `json:"internalRedirect,omitempty"`
+	AIRouting                 *AIRoutingSummary     `json:"aiRouting,omitempty"`
+	ObservedAt                string                `json:"observedAt"`
+	ClusterID                 string                `json:"clusterID"`
+	Pod                       string                `json:"pod"`
+	Authority                 string                `json:"authority,omitempty"`
+	Method                    string                `json:"method,omitempty"`
+	Path                      string                `json:"path,omitempty"`
+	Protocol                  string                `json:"protocol,omitempty"`
+	RouteName                 string                `json:"routeName,omitempty"`
+	UpstreamCluster           string                `json:"upstreamCluster,omitempty"`
+	UpstreamHost              string                `json:"upstreamHost,omitempty"`
+	UpstreamLocalAddress      string                `json:"upstreamLocalAddress,omitempty"`
+	DownstreamRemoteAddress   string                `json:"downstreamRemoteAddress,omitempty"`
+	DownstreamLocalAddress    string                `json:"downstreamLocalAddress,omitempty"`
+	ResponseCode              int                   `json:"responseCode,omitempty"`
+	ResponseFlags             string                `json:"responseFlags,omitempty"`
+	ResponseCodeDetails       string                `json:"responseCodeDetails,omitempty"`
+	DurationMillis            int64                 `json:"durationMillis,omitempty"`
+	UpstreamServiceTimeMillis int64                 `json:"upstreamServiceTimeMillis,omitempty"`
+	UpstreamTransportFailure  string                `json:"upstreamTransportFailureReason,omitempty"`
+	AILog                     string                `json:"aiLog,omitempty"`
+	ExtProcs                  []ExtProcObservation  `json:"extProcs,omitempty"`
+	EvidenceSource            string                `json:"evidenceSource"`
+	Correlation               ProbeCorrelation      `json:"correlation,omitempty"`
+	Confidence                ObservationConfidence `json:"confidence"`
 }
 
 // ExtProcObservation 仅保留 Envoy ext_proc 过滤器状态中允许展示的逐请求字段，
 // 供探测跳点展示处理器结果；不接收任意类型元数据，以免泄露请求或模型载荷。
 type ExtProcObservation struct {
-	Processor                 string `json:"processor,omitempty"`
-	RuleID                    string `json:"ruleID,omitempty"`
-	SelectedPool              string `json:"selectedPool,omitempty"`
-	SelectedEndpoint          string `json:"selectedEndpoint,omitempty"`
-	ReasonCode                string `json:"reasonCode,omitempty"`
-	RequestHeaderCalls        int    `json:"requestHeaderCalls,omitempty"`
-	RequestBodyCalls          int    `json:"requestBodyCalls,omitempty"`
-	ResponseHeaderCalls       int    `json:"responseHeaderCalls,omitempty"`
-	ResponseBodyCalls         int    `json:"responseBodyCalls,omitempty"`
-	RequestHeaderLatencyUS    int64  `json:"requestHeaderLatencyUs,omitempty"`
-	RequestBodyLatencyUS      int64  `json:"requestBodyLatencyUs,omitempty"`
-	ResponseHeaderLatencyUS   int64  `json:"responseHeaderLatencyUs,omitempty"`
-	ResponseBodyLatencyUS     int64  `json:"responseBodyLatencyUs,omitempty"`
-	GRPCStatus                string `json:"grpcStatus,omitempty"`
-	FailureModeAllowed        bool   `json:"failureModeAllowed,omitempty"`
-	FailedOpen                bool   `json:"failedOpen,omitempty"`
-	MessageTimeout            bool   `json:"messageTimeout,omitempty"`
-	HTTPError                 bool   `json:"httpError,omitempty"`
-	ReceivedImmediateResponse bool   `json:"receivedImmediateResponse,omitempty"`
-	Invoked                   bool   `json:"invoked"`
-	Outcome                   string `json:"outcome"`
+	Processor                 string         `json:"processor,omitempty"`
+	RuleID                    string         `json:"ruleID,omitempty"`
+	SelectedPool              string         `json:"selectedPool,omitempty"`
+	SelectedEndpoint          string         `json:"selectedEndpoint,omitempty"`
+	ReasonCode                string         `json:"reasonCode,omitempty"`
+	RequestHeaderCalls        int            `json:"requestHeaderCalls,omitempty"`
+	RequestBodyCalls          int            `json:"requestBodyCalls,omitempty"`
+	ResponseHeaderCalls       int            `json:"responseHeaderCalls,omitempty"`
+	ResponseBodyCalls         int            `json:"responseBodyCalls,omitempty"`
+	RequestHeaderLatencyUS    int64          `json:"requestHeaderLatencyUs,omitempty"`
+	RequestBodyLatencyUS      int64          `json:"requestBodyLatencyUs,omitempty"`
+	ResponseHeaderLatencyUS   int64          `json:"responseHeaderLatencyUs,omitempty"`
+	ResponseBodyLatencyUS     int64          `json:"responseBodyLatencyUs,omitempty"`
+	GRPCStatus                string         `json:"grpcStatus,omitempty"`
+	FailureModeAllowed        bool           `json:"failureModeAllowed,omitempty"`
+	FailedOpen                bool           `json:"failedOpen,omitempty"`
+	MessageTimeout            bool           `json:"messageTimeout,omitempty"`
+	HTTPError                 bool           `json:"httpError,omitempty"`
+	ReceivedImmediateResponse bool           `json:"receivedImmediateResponse,omitempty"`
+	Invoked                   bool           `json:"invoked"`
+	Outcome                   ExtProcOutcome `json:"outcome"`
 }
 
 // AgentCommand 是服务端下发给 Agent 的命令，用于查询配置或执行、观测探测。
 type AgentCommand struct {
-	ID                      string        `json:"id"`
-	ClusterID               string        `json:"clusterID"`
-	Kind                    string        `json:"kind"`
-	GatewayID               string        `json:"gatewayID"`
-	Deadline                string        `json:"deadline"`
-	ExecutionTimeoutSeconds int           `json:"executionTimeoutSeconds,omitempty"`
-	Probe                   *ProbeCommand `json:"probe,omitempty"`
+	ID                      string           `json:"id"`
+	ClusterID               string           `json:"clusterID"`
+	Kind                    AgentCommandKind `json:"kind"`
+	GatewayID               string           `json:"gatewayID"`
+	Deadline                string           `json:"deadline"`
+	ExecutionTimeoutSeconds int              `json:"executionTimeoutSeconds,omitempty"`
+	Probe                   *ProbeCommand    `json:"probe,omitempty"`
 }
 
 // ProbeCommand 携带 Agent 执行或观测主动探测所需的请求参数和关联标识。
 type ProbeCommand struct {
-	ProbeID     string `json:"probeID"`
-	TraceID     string `json:"traceID"`
-	GatewayID   string `json:"gatewayID"`
-	EntryID     string `json:"entryID,omitempty"`
-	Method      string `json:"method"`
-	Path        string `json:"path,omitempty"`
-	Host        string `json:"host,omitempty"`
-	APIKey      string `json:"apiKey,omitempty"`
-	ContentType string `json:"contentType,omitempty"`
-	Body        string `json:"body,omitempty"`
-	StartedAt   string `json:"startedAt,omitempty"`
+	ProbeID     string          `json:"probeID"`
+	TraceID     string          `json:"traceID"`
+	GatewayID   string          `json:"gatewayID"`
+	EntryID     string          `json:"entryID,omitempty"`
+	Method      ProbeHTTPMethod `json:"method"`
+	Path        string          `json:"path,omitempty"`
+	Host        string          `json:"host,omitempty"`
+	APIKey      string          `json:"apiKey,omitempty"`
+	ContentType string          `json:"contentType,omitempty"`
+	Body        string          `json:"body,omitempty"`
+	StartedAt   string          `json:"startedAt,omitempty"`
 }
 
 // AgentCommandResult 携带 Agent 返回的配置、探测结果或错误，供服务端完成命令。
 type AgentCommandResult struct {
-	CommandID string          `json:"commandID"`
-	ClusterID string          `json:"clusterID"`
-	Config    *EnvoyConfig    `json:"config,omitempty"`
-	Probe     *ProbeExecution `json:"probe,omitempty"`
-	Error     string          `json:"error,omitempty"`
+	CommandID string            `json:"commandID"`
+	ClusterID string            `json:"clusterID"`
+	Config    *EnvoyConfig      `json:"config,omitempty"`
+	Probe     *ProbeAgentResult `json:"probe,omitempty"`
+	Error     string            `json:"error,omitempty"`
 }

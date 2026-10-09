@@ -416,7 +416,7 @@ func serviceSelectsRuntime(service *corev1.Service, runtime gatewayRuntime) bool
 	return false
 }
 
-func probePortProtocol(port corev1.ServicePort) (string, string, bool) {
+func probePortProtocol(port corev1.ServicePort) (domain.ProbeScheme, string, bool) {
 	if port.Protocol != "" && port.Protocol != corev1.ProtocolTCP {
 		return "", "", false
 	}
@@ -426,9 +426,9 @@ func probePortProtocol(port corev1.ServicePort) (string, string, bool) {
 	}
 	switch {
 	case hint == "https", hint == "tls", strings.HasPrefix(hint, "https-"), strings.HasSuffix(hint, "/https"), strings.HasSuffix(hint, "/wss"):
-		return "https", "https", true
+		return domain.ProbeSchemeHTTPS, "https", true
 	case hint == "http", hint == "http2", hint == "h2c", hint == "ws", strings.HasPrefix(hint, "http-"), strings.HasPrefix(hint, "http2-"), strings.HasSuffix(hint, "/http"), strings.HasSuffix(hint, "/http2"), strings.HasSuffix(hint, "/h2c"), strings.HasSuffix(hint, "/ws"):
-		return "http", "http", true
+		return domain.ProbeSchemeHTTP, "http", true
 	default:
 		return "", "", false
 	}
@@ -493,7 +493,7 @@ func addStandaloneGatewayRuntimes(snap *snapshot, deployments, pods cache.Store)
 		}
 		snap.runtimes[runtime.GatewayID] = runtime
 		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-			ID: runtime.GatewayID, Name: runtime.WorkloadName, Kind: "Gateway", Namespace: runtime.Namespace,
+			ID: runtime.GatewayID, Name: runtime.WorkloadName, Kind: domain.TopologyNodeKindGateway, Namespace: runtime.Namespace,
 			ClusterID: snap.context.Cluster.ID, Status: domain.StatusHealthy, StatusText: fmt.Sprintf("%d Ready", len(runtime.Pods)),
 			Summary: "根据 Deployment 和 Ready Pod 自动识别的数据面网关。", Conditions: gatewayRuntimeConditions(runtime),
 			Source: "apps/v1 Deployment / v1 Pod", WorkloadScope: runtime.Namespace,

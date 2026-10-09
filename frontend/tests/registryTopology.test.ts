@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { registryOwners, unresolvedIngressBridges, visibleTopologyEdges } from '../src/utils/registryTopology.js'
-import type { TopologyEdge, TopologyNode } from '../src/types.js'
+import type { TopologyEdge, TopologyNode, TopologyNodeKind } from '../src/types.js'
 
-function node(id: string, kind: string, name = id): TopologyNode {
+function node(id: string, kind: TopologyNodeKind, name = id): TopologyNode {
   return { id, kind, name, namespace: 'higress-system', clusterID: 'edge', status: 'healthy', statusText: '已发现', summary: '', conditions: [], source: '' }
 }
 

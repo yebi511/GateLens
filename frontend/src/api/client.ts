@@ -1,3 +1,4 @@
+import { validateProbeExecution } from '../utils/probeProtocol'
 import type {
   EnvoyConfig,
   Finding,
@@ -65,19 +66,12 @@ async function getEnvoy(gatewayID: string): Promise<EnvoyConfig> {
   return value
 }
 async function createProbe(payload: ProbeRequest): Promise<ProbeExecution> {
-  const value = await request<ProbeExecution>('/api/v1/probes', {
+  const value = await request<unknown>('/api/v1/probes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  value.hops ??= []
-  value.segments ??= []
-  for (const segment of value.segments) {
-    segment.hops ??= []
-    segment.gaps ??= []
-  }
-  value.gaps ??= []
-  return value
+  return validateProbeExecution(value)
 }
 
 export const api = {
@@ -87,4 +81,5 @@ export const api = {
   resources: async () => (await request<Resource[] | null>('/api/v1/resources')) ?? [],
   envoy: getEnvoy,
   createProbe,
+  probe: async (id: string) => validateProbeExecution(await request<unknown>(`/api/v1/probes/${encodeURIComponent(id)}`)),
 }

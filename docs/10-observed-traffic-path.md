@@ -62,7 +62,7 @@ response_code, response_flags, response_code_details, duration
 
 Agent 只注入 `X-GateLens-Probe-ID` 和 B3 trace header，不注入 `X-Request-ID`。跨多个网关时，必须确保路由、WasmPlugin、鉴权插件和 Header 改写规则不会删除或覆盖 `x-gatelens-probe-id`；每一跳都要输出同名 JSON 字段。
 
-`ai_log=%FILTER_STATE(wasm.ai_log:PLAIN)%` 是可选证据。GateLens 仅从 JSON 对象提取 `provider`、`request_model`、`upstream_model`、`response_model` 四个字符串字段作为路由摘要；格式错误不影响访问日志观察。旧 `aiLog` 字段保留兼容，但页面不默认展示完整日志中的问题和回答，也不根据 usage 的 `outcome` 或 `downstream_disconnected` 推断请求结果。默认格式没有 ext_proc Filter State，因此 BBR/EPP 的调用阶段、gRPC 状态和内部选择理由不会自动出现。ext_proc 的具体追加方式见 [0.6](#06-bbrepp-与-ext_proc-边界)。
+`ai_log=%FILTER_STATE(wasm.ai_log:PLAIN)%` 是可选证据。GateLens 仅从 JSON 对象提取 `provider`、`request_model`、`upstream_model`、`response_model` 四个字符串字段作为路由摘要；格式错误不影响访问日志观察。原始 `aiLog` 字段继续保留为证据，但页面不默认展示完整日志中的问题和回答，也不根据 usage 的 `outcome` 或 `downstream_disconnected` 推断请求结果。默认格式没有 ext_proc Filter State，因此 BBR/EPP 的调用阶段、gRPC 状态和内部选择理由不会自动出现。ext_proc 的具体追加方式见 [0.6](#06-bbrepp-与-ext_proc-边界)。
 
 ### 0.3 部署 Agent
 
@@ -237,11 +237,54 @@ EPP 继续使用 `envoy.filters.http.ext_proc`，避免破坏 InferencePool 控�
 
 源请求结束后的采集窗口默认最多 2 秒，远端只读观察最多 4 秒，读取间隔 200 毫秒，稳定等待 500 毫秒。每次读取使用窗口剩余时间；命令 deadline 更早时提前停止。第一条 redirect 不会结束采集，唯一且无冲突的终止候选需要额外读取并稳定后才可结束。整个过程只多读日志，源 Agent 仍只发送一次 HTTP 请求，客户端不跟随外部 HTTP 3xx。
 
-新增 `collection` 状态为 `settled`、`window-ended`、`cancelled`、`read-error`、`unknown`。取消、读取失败或窗口结束都返回累计记录及缺口；`settled` 仅表示窗口内稳定，不保证未输出的内部尝试不存在。仅有 redirect 时增加“后续尝试记录缺失”缺口。旧 Agent 缺少采集和身份元数据时保持未知。
+每个网关 Segment 的 `collection.state` 枚举为 `settled`、`window-ended`、`cancelled`、`read-error`、`unknown`。取消、读取失败或窗口结束都返回该段累计记录及结构化 `issues`；`settled` 仅表示窗口内稳定，不保证未输出的内部尝试不存在。仅有 redirect 时增加 `redirect-next-missing` 问题。有效版本 2 结果缺少身份元数据时保留证据并标记未知；旧协议直接拒绝，不进入未知证据展示路径。
 
-Server 汇总已观测 redirect 标记数、已关联后继数及内部过程状态。`EvidenceComplete` 延续网关覆盖含义，不据此断言内部过程完整。Agent 实际响应码或错误不被日志覆盖；局部终止候选只有在稳定且无冲突时升级为网关终止尝试。源网关唯一运行时分组、精确 probe 关联、无缺口且状态码与 Agent 一致时才设置 `finalResponseHopID`；全请求只有一个网关段且无相关缺口时才设置 `finalUpstreamHopID`。多网关因缺少 Span 因果关系，最终上游保持未确认。
+Server 只返回网关段内的记录和确认引用。前端从 `segments[].hops` 的 `internalRedirect` 统计 redirect、从 `segments[].links` 统计已确认后继数，结合采集状态、段级关系和结构化问题生成过程提示。顶层 `hops`、`collection`、`logSource`、`EvidenceComplete`、`redirectSummary` 与各层 `gaps` 均已移除，不再维护重复摘要。
+
+Agent 实际响应码或错误不被日志覆盖。`localTerminalHopIDs` 是稳定且无相关问题的各上下文网关终止引用；`finalResponseHopID` 还要求源网关只有一个上下文、精确 probe 关联、无相关问题且状态码与实测 HTTP 一致；全请求只有一个网关段且无执行问题时才设置 `finalUpstreamHopID`。多网关缺少 Span 因果关系，最终上游保持未确认。
 
 页面区分 Agent 实测请求总耗时、日志 duration 和 upstream_service_time。共享开始时间的 440/8736 ms 不相加、不做差值推算。固定 AI 摘要提供可用 Provider 和模型；地址 `-` 显示未记录，配置映射不替代实际连接证据。联合样例与验收记录见 [内部重定向验收](12-probe-redirect-acceptance.md)。
+
+### 0.8 版本 2 的结果结构与部署
+
+Agent 的局部返回值为 `ProbeAgentResult`：版本、probe/trace、集群/本地网关、执行时间、可选 `http`、`hops`、`collection`、`issues`。真实请求必须有 `http`；只读命令禁止有 `http`。Server 校验版本、身份、载荷形状和固定枚举，源协议错误使探测失败，远端协议错误形成该段 `probe-protocol-unsupported` 采集问题并保留源 HTTP 响应。
+
+Server 对外示例（空证据候选；数组始终为数组）：
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "example-probe",
+  "traceID": "example-trace",
+  "sourceCluster": "edge",
+  "gatewayID": "edge::gateway/demo",
+  "method": "POST",
+  "target": "http://gateway.demo.svc.cluster.local:80/v1/chat/completions",
+  "state": "completed",
+  "startedAt": "2026-10-09T00:00:00Z",
+  "completedAt": "2026-10-09T00:00:02Z",
+  "responseCode": 200,
+  "issues": [],
+  "segments": [{
+    "index": 1,
+    "clusterID": "edge",
+    "gatewayID": "edge::gateway/demo",
+    "snapshotObservedAt": "2026-10-08T23:59:50Z",
+    "hops": [],
+    "collection": { "state": "window-ended" },
+    "relationState": "unconfirmed",
+    "links": [],
+    "localTerminalHopIDs": [],
+    "issues": [{ "scope": "collection", "code": "no-matching-log", "message": "未找到本次请求的访问日志" }]
+  }]
+}
+```
+
+有日志时，每条 Hop 带唯一 `id` 和段内 `contextID`；同上下文确认连接形如 `{ "from": "gateway/record-1", "to": "gateway/record-2" }`。完整 Group 不再作为公开协议。问题存储在唯一所属位置：顶层仅 execution，段内为 collection / relation / inference。带上下文的问题可以定位到未知或歧义上下文，不影响其他上下文已有的确认连接。
+
+`collection.state`、`relationState`、执行状态、问题作用域和原因码、关联依据、推断置信度、ext_proc 结果、快照一致性及 HTTP Method / Scheme 均为具名枚举。详细取值见 `internal/domain/probe_protocol.go` 和 `frontend/src/types.ts`；非法值不会静默转成成功或 unknown。问题说明更换语言不影响业务判断。
+
+API 路径保持 `POST /api/v1/probes` 和 `GET /api/v1/probes/{id}`，响应与 Agent 载荷为破坏性变更。发布前停止新探测、等待在途请求完成，然后同步升级前端、Server 及全部 Agent。回滚必须三端整体回滚并重启，重新发起探测；不转换 Server 内存中的旧结果，不保留跨版本命令，不增加双协议适配。
 
 ## 1. 背景
 
@@ -498,7 +541,9 @@ AgentCommand.kind = probe-http
 | 类型 | 关键字段 |
 | --- | --- |
 | `ProbeRequest` | sourceCluster, gatewayID, entryID, method, host, path, apiKey, contentType, body, timeout |
-| `ProbeExecution` | id, traceID, state, startedAt, completedAt, responseSummary |
+| `ProbeExecution` | schemaVersion=2, id, traceID, HTTP 结果, segments, issues, final 引用 |
+| `ProbeAgentResult` | schemaVersion=2, probeID, traceID, clusterID, gatewayID, http?, hops, collection, issues |
+| `ProbeSegment` | gatewayID, snapshotObservedAt, hops, collection, relationState, links, localTerminalHopIDs, issues |
 | `TrafficEvidence` | type, source, timestamp, clusterID, attributes, redactionState |
 | `ObservedHop` | from, to, route, upstream, evidenceRefs, confidence |
 | `ObservedPath` | probeID, snapshotRefs, branches, gaps, completeness |

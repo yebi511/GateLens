@@ -50,7 +50,7 @@ func TestProbeCapturesDelayedRedirectLogsWithOneHTTPRequest(t *testing.T) {
 	}))
 	defer server.Close()
 	parsed, _ := url.Parse(server.URL)
-	entry := domain.ProbeEntry{ID: "entry", GatewayID: "gateway", DNSName: parsed.Hostname(), Port: int32(mustPort(t, parsed.Port())), Scheme: parsed.Scheme}
+	entry := domain.ProbeEntry{ID: "entry", GatewayID: "gateway", DNSName: parsed.Hostname(), Port: int32(mustPort(t, parsed.Port())), Scheme: domain.ProbeScheme(parsed.Scheme)}
 	store := &Store{clusterID: "edge", probeLogFile: path, snapshot: snapshot{runtimes: map[string]gatewayRuntime{"gateway": {Pods: []proxyPod{{Name: "pod", Namespace: "ns"}}}}, probeEntries: map[string]domain.ProbeEntry{"entry": entry}}}
 	command := domain.ProbeCommand{ProbeID: "probe", GatewayID: "gateway", EntryID: "entry", Method: "POST", Path: "/v1/chat/completions"}
 	result, err := store.ExecuteProbe(context.Background(), command)
@@ -58,11 +58,11 @@ func TestProbeCapturesDelayedRedirectLogsWithOneHTTPRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-writerDone
-	if requests.Load() != 1 || result.ResponseCode != 200 || len(result.Hops) != 2 || !result.Hops[0].InternalRedirect {
+	if requests.Load() != 1 || result.HTTP.ResponseCode != 200 || len(result.Hops) != 2 || !result.Hops[0].InternalRedirect {
 		t.Fatalf("requests=%d result=%+v", requests.Load(), result)
 	}
 	observed, err := store.ObserveProbe(context.Background(), command)
-	if err != nil || len(observed.Hops) != 2 || requests.Load() != 1 {
+	if err != nil || observed.HTTP != nil || len(observed.Hops) != 2 || requests.Load() != 1 {
 		t.Fatalf("observed=%+v err=%v", observed, err)
 	}
 }
@@ -81,7 +81,7 @@ func TestExecuteProbeDoesNotFollowClientRedirect(t *testing.T) {
 	entry := domain.ProbeEntry{ID: "entry", GatewayID: "gateway", DNSName: parsed.Hostname(), Port: int32(mustPort(t, parsed.Port())), Scheme: "http"}
 	store := &Store{clusterID: "edge", probeLogFile: path, snapshot: snapshot{runtimes: map[string]gatewayRuntime{"gateway": {Pods: []proxyPod{{Name: "pod"}}}}, probeEntries: map[string]domain.ProbeEntry{"entry": entry}}}
 	result, err := store.ExecuteProbe(context.Background(), domain.ProbeCommand{ProbeID: "probe", GatewayID: "gateway", EntryID: "entry", Method: "GET", Path: "/"})
-	if err != nil || result.ResponseCode != 302 || followed.Load() != 0 {
+	if err != nil || result.HTTP.ResponseCode != 302 || followed.Load() != 0 {
 		t.Fatalf("result=%+v err=%v followed=%d", result, err, followed.Load())
 	}
 }
@@ -114,7 +114,7 @@ func TestExecuteProbeReadsFileIncrementAndInjectsIdentifiers(t *testing.T) {
 	if parsed.Port() != "" {
 		port = int32(mustPort(t, parsed.Port()))
 	}
-	entry := domain.ProbeEntry{ID: "entry/higress", GatewayID: "gateway/higress-system/higress", DNSName: parsed.Hostname(), Port: port, Scheme: parsed.Scheme}
+	entry := domain.ProbeEntry{ID: "entry/higress", GatewayID: "gateway/higress-system/higress", DNSName: parsed.Hostname(), Port: port, Scheme: domain.ProbeScheme(parsed.Scheme)}
 	store := &Store{clusterID: "edge", probeLogFile: logPath, snapshot: snapshot{runtimes: map[string]gatewayRuntime{
 		"gateway/higress-system/higress": {GatewayID: "gateway/higress-system/higress", Pods: []proxyPod{{Name: "higress-1", Namespace: "higress-system"}}},
 	}, probeEntries: map[string]domain.ProbeEntry{entry.ID: entry}}}
@@ -125,7 +125,7 @@ func TestExecuteProbeReadsFileIncrementAndInjectsIdentifiers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "completed" || result.ResponseCode != http.StatusOK || len(result.Hops) != 1 || result.Hops[0].RouteName != "chat" || !result.EvidenceComplete {
+	if result.SchemaVersion != domain.ProbeSchemaVersion || result.HTTP.ResponseCode != http.StatusOK || len(result.Hops) != 1 || result.Hops[0].RouteName != "chat" || result.Collection == nil {
 		t.Fatalf("result=%#v", result)
 	}
 }
@@ -214,7 +214,50 @@ func TestObserveProbeReadsExistingLogWithoutTargetURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "completed" || len(result.Hops) != 1 || result.Hops[0].RouteName != "remote-route" || !result.EvidenceComplete {
+	if result.SchemaVersion != domain.ProbeSchemaVersion || len(result.Hops) != 1 || result.Hops[0].RouteName != "remote-route" || result.Collection == nil {
 		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestHTTPReadFailureAndResponseLimitKeepLogEvidence(t *testing.T) {
+	for _, mode := range []string{"read-failure", "response-limit"} {
+		t.Run(mode, func(t *testing.T) {
+			logPath := filepath.Join(t.TempDir(), "access.log")
+			if err := os.WriteFile(logPath, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				line := probeLogLine("terminal", "via_upstream", 200)
+				if err := os.WriteFile(logPath, []byte(line), 0600); err != nil {
+					t.Error(err)
+				}
+				if mode == "read-failure" {
+					w.Header().Set("Content-Length", "100")
+					_, _ = w.Write([]byte("partial"))
+				} else {
+					_, _ = w.Write([]byte(strings.Repeat("x", maxProbeResponseBytes+2)))
+				}
+			}))
+			defer server.Close()
+			parsed, _ := url.Parse(server.URL)
+			entry := domain.ProbeEntry{ID: "entry", GatewayID: "gateway", DNSName: parsed.Hostname(), Port: int32(mustPort(t, parsed.Port())), Scheme: domain.ProbeSchemeHTTP}
+			store := &Store{clusterID: "edge", probeLogFile: logPath, snapshot: snapshot{runtimes: map[string]gatewayRuntime{"gateway": {Pods: []proxyPod{{Name: "pod"}}}}, probeEntries: map[string]domain.ProbeEntry{"entry": entry}}}
+			result, err := store.ExecuteProbe(context.Background(), domain.ProbeCommand{ProbeID: "probe", GatewayID: "gateway", EntryID: "entry", Method: domain.ProbeHTTPMethodGET, Path: "/"})
+			if err != nil || len(result.Hops) != 1 || result.HTTP == nil || result.HTTP.ResponseCode != 200 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			limit := false
+			for _, issue := range result.Issues {
+				if issue.Scope == domain.ProbeIssueScopeExecution && issue.Code == domain.ProbeIssueCodeResponseLimitExceeded {
+					limit = true
+				}
+			}
+			if mode == "read-failure" && (result.HTTP.Error == "" || limit) {
+				t.Fatal(result)
+			}
+			if mode == "response-limit" && (result.HTTP.Error != "" || !limit) {
+				t.Fatal(result)
+			}
+		})
 	}
 }

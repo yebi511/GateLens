@@ -123,14 +123,14 @@ func ParseHigressLineForProbe(line, probeID, traceID, clusterID, pod, source str
 	if _, usageRecord := rawFields["ai_usage_record"]; usageRecord {
 		return domain.ObservedHop{}, false, nil
 	}
-	correlation := ""
+	var correlation domain.ProbeCorrelation
 	loggedProbeID := validLogValue(entry.GateLensProbeID)
 	if loggedProbeID != "" {
 		if validLogValue(probeID) != "" && loggedProbeID == probeID {
-			correlation = "probe-id"
+			correlation = domain.ProbeCorrelationProbeID
 		}
 	} else if validLogValue(traceID) != "" && validLogValue(entry.TraceID) != "" && strings.EqualFold(strings.TrimSpace(entry.TraceID), strings.TrimSpace(traceID)) {
-		correlation = "trace-id"
+		correlation = domain.ProbeCorrelationTraceID
 	}
 	if correlation == "" {
 		return domain.ObservedHop{}, false, nil
@@ -158,7 +158,7 @@ func ParseHigressLineForProbe(line, probeID, traceID, clusterID, pod, source str
 		AILog:                    entry.AILog,
 		EvidenceSource:           source,
 		Correlation:              correlation,
-		Confidence:               "observed",
+		Confidence:               domain.ObservationConfidenceObserved,
 	}
 	hop.ResponseCode = integer(string(entry.ResponseCode))
 	hop.DurationMillis = integer64(string(entry.Duration))
@@ -449,31 +449,31 @@ func parseExtProcObservation(entry higressAccessLog, raw json.RawMessage, proces
 		observation.GRPCStatus != "" || observation.HTTPError || observation.MessageTimeout || observation.ReceivedImmediateResponse
 	switch {
 	case observation.FailedOpen:
-		observation.Outcome = "fail-open"
+		observation.Outcome = domain.ExtProcOutcomeFailOpen
 	case observation.MessageTimeout:
 		if observation.FailureModeAllowed {
-			observation.Outcome = "fail-open"
+			observation.Outcome = domain.ExtProcOutcomeFailOpen
 		} else {
-			observation.Outcome = "timeout"
+			observation.Outcome = domain.ExtProcOutcomeTimeout
 		}
 	case observation.HTTPError:
 		if observation.FailureModeAllowed {
-			observation.Outcome = "fail-open"
+			observation.Outcome = domain.ExtProcOutcomeFailOpen
 		} else {
-			observation.Outcome = "error"
+			observation.Outcome = domain.ExtProcOutcomeError
 		}
 	case observation.ReceivedImmediateResponse:
-		observation.Outcome = "immediate-response"
+		observation.Outcome = domain.ExtProcOutcomeImmediateResponse
 	case observation.GRPCStatus != "" && observation.GRPCStatus != "0" && !strings.EqualFold(observation.GRPCStatus, "ok"):
 		if observation.FailureModeAllowed {
-			observation.Outcome = "fail-open"
+			observation.Outcome = domain.ExtProcOutcomeFailOpen
 		} else {
-			observation.Outcome = "error"
+			observation.Outcome = domain.ExtProcOutcomeError
 		}
 	case observation.Invoked:
-		observation.Outcome = "success"
+		observation.Outcome = domain.ExtProcOutcomeSuccess
 	default:
-		observation.Outcome = "unknown"
+		observation.Outcome = domain.ExtProcOutcomeUnknown
 	}
 	return observation
 }

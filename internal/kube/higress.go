@@ -32,7 +32,7 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 		if len(registries) == 0 {
 			status, statusText = domain.StatusWarning, "无注册中心"
 		}
-		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: id, Name: bridge.GetName(), Kind: "McpBridge", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: status, StatusText: statusText, Summary: fmt.Sprintf("Higress McpBridge，包含 %d 个注册中心。", len(registries)), Conditions: []string{fmt.Sprintf("Registries=%d", len(registries))}, Source: "networking.higress.io/v1 McpBridge"})
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: id, Name: bridge.GetName(), Kind: domain.TopologyNodeKindMcpBridge, Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: status, StatusText: statusText, Summary: fmt.Sprintf("Higress McpBridge，包含 %d 个注册中心。", len(registries)), Conditions: []string{fmt.Sprintf("Registries=%d", len(registries))}, Source: "networking.higress.io/v1 McpBridge"})
 		if len(registries) == 0 {
 			addFinding(snap, domain.StatusWarning, "McpBridge 未配置注册中心", bridgeKey, "spec.registries is empty", id)
 		}
@@ -49,7 +49,7 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 			if protocol != "" {
 				conditions = append(conditions, "Protocol="+protocol)
 			}
-			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: registryID, Name: name, Kind: "Registry", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: registryType + "://" + domainName + ":" + port, Conditions: conditions, Source: "McpBridge.spec.registries"})
+			snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: registryID, Name: name, Kind: domain.TopologyNodeKindRegistry, Namespace: bridge.GetNamespace(), ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已配置", Summary: registryType + "://" + domainName + ":" + port, Conditions: conditions, Source: "McpBridge.spec.registries"})
 			snap.topology.Edges = append(snap.topology.Edges, domain.TopologyEdge{From: id, To: registryID, Relation: "discovers"})
 			if domainName != "" {
 				if serviceKey, ok := serviceForRegistryDomain(domainName, bridge.GetNamespace(), services); ok {
@@ -71,7 +71,7 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 						targetConditions = append(targetConditions, "Protocol="+protocol)
 					}
 					snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-						ID: targetID, Name: domainName, Kind: "ExternalTarget", Namespace: bridge.GetNamespace(), ClusterID: s.clusterID,
+						ID: targetID, Name: domainName, Kind: domain.TopologyNodeKindExternalTarget, Namespace: bridge.GetNamespace(), ClusterID: s.clusterID,
 						Status: domain.StatusHealthy, StatusText: "Configured", Summary: "Configured target " + domainName + ":" + port,
 						Conditions: targetConditions, Source: "McpBridge.spec.registries[].domain",
 					})
@@ -88,7 +88,7 @@ func (s *Store) addHigressResources(snap *snapshot, ingressItems, bridgeItems []
 		}
 		ingressID := "ingress/" + ingress.Namespace + "/" + ingress.Name
 		conditions := append(annotationConditions(ingress.Annotations), ingressEntryConditions(ingress)...)
-		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: ingressID, Name: ingress.Name, Kind: "Ingress", Namespace: ingress.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: "Higress Ingress 路由。", Conditions: conditions, Source: "networking.k8s.io/v1 Ingress"})
+		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{ID: ingressID, Name: ingress.Name, Kind: domain.TopologyNodeKindIngress, Namespace: ingress.Namespace, ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现", Summary: "Higress Ingress 路由。", Conditions: conditions, Source: "networking.k8s.io/v1 Ingress"})
 		for _, rule := range ingress.Spec.Rules {
 			if rule.HTTP == nil {
 				continue
@@ -199,7 +199,7 @@ func (s *Store) addIngressEntryResources(snap *snapshot, items []any) {
 		}
 		id := "ingress/" + ingress.Namespace + "/" + ingress.Name
 		snap.topology.Nodes = appendUnique(snap.topology.Nodes, domain.TopologyNode{
-			ID: id, Name: ingress.Name, Kind: "Ingress", Namespace: ingress.Namespace,
+			ID: id, Name: ingress.Name, Kind: domain.TopologyNodeKindIngress, Namespace: ingress.Namespace,
 			ClusterID: s.clusterID, Status: domain.StatusHealthy, StatusText: "已发现",
 			Summary: "Kubernetes Ingress 入口。", Conditions: conditions, Source: "networking.k8s.io/v1 Ingress",
 		})
@@ -251,7 +251,7 @@ func linkIngressesToGateways(snap *snapshot, ingressItems, ingressClassItems []a
 	}
 	gateways := []gatewayCandidate{}
 	for _, node := range snap.topology.Nodes {
-		if node.Kind != "Gateway" || node.ClusterID != snap.context.Cluster.ID {
+		if node.Kind != domain.TopologyNodeKindGateway || node.ClusterID != snap.context.Cluster.ID {
 			continue
 		}
 		controller := conditionWithPrefix(node.Conditions, "Controller=")

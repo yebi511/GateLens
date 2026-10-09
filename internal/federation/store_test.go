@@ -522,11 +522,10 @@ func TestStoreProbeCollectsRemoteGatewayWithoutSendingAnotherRequest(t *testing.
 	if sourceCommand.Probe == nil || sourceCommand.Probe.APIKey != "secret-key" {
 		t.Fatalf("source command did not carry the transient API key: %#v", sourceCommand.Probe)
 	}
-	sourceResult := domain.ProbeExecution{
-		ID: sourceCommand.Probe.ProbeID, TraceID: sourceCommand.Probe.TraceID,
-		SourceCluster: "edge", State: "completed", LogSource: "edge-log",
-		ResponseCode: 200, Collection: &domain.ProbeCollection{State: "settled"},
-		Hops: []domain.ObservedHop{{ID: "record-1", ObservedAt: now.Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "edge/pod", LogSourceID: "edge/pod", LogSequence: 1, DownstreamRemoteAddress: "10.0.0.1:1234", Correlation: "probe-id", ResponseCode: 200, ResponseCodeDetails: "via_upstream", ClusterID: "edge", RouteName: "to-gpu", Confidence: "observed"}}, EvidenceComplete: true,
+	sourceResult := domain.ProbeAgentResult{
+		SchemaVersion: domain.ProbeSchemaVersion, GatewayID: sourceCommand.GatewayID, ProbeID: sourceCommand.Probe.ProbeID, TraceID: sourceCommand.Probe.TraceID,
+		ClusterID: "edge", HTTP: &domain.ProbeHTTPResult{Method: sourceCommand.Probe.Method, ResponseCode: 200}, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled},
+		Hops: []domain.ObservedHop{{ID: "record-1", ObservedAt: now.Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "edge/pod", LogSourceID: "edge/pod", LogSequence: 1, DownstreamRemoteAddress: "10.0.0.1:1234", Correlation: "probe-id", ResponseCode: 200, ResponseCodeDetails: "via_upstream", ClusterID: "edge", RouteName: "to-gpu", Confidence: "observed"}},
 	}
 	if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: sourceCommand.ID, ClusterID: "edge", Probe: &sourceResult}); err != nil {
 		t.Fatal(err)
@@ -539,14 +538,14 @@ func TestStoreProbeCollectsRemoteGatewayWithoutSendingAnotherRequest(t *testing.
 	if remoteCommand.Kind != domain.AgentCommandProbeObserve || remoteCommand.Probe == nil || remoteCommand.Probe.EntryID != "" || remoteCommand.Probe.Path != "" || remoteCommand.Probe.APIKey != "" || remoteCommand.Probe.Body != "" {
 		t.Fatalf("remote observation could emit traffic: %#v", remoteCommand)
 	}
-	remoteResult := domain.ProbeExecution{
-		ID: remoteCommand.Probe.ProbeID, TraceID: remoteCommand.Probe.TraceID,
-		SourceCluster: "gpu", State: "completed", LogSource: "gpu-log",
-		Collection: &domain.ProbeCollection{State: "settled"},
+	remoteResult := domain.ProbeAgentResult{
+		SchemaVersion: domain.ProbeSchemaVersion, GatewayID: remoteCommand.GatewayID, ProbeID: remoteCommand.Probe.ProbeID, TraceID: remoteCommand.Probe.TraceID,
+		ClusterID:  "gpu",
+		Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled},
 		Hops: []domain.ObservedHop{
-			{ID: "record-1", ObservedAt: now.Add(time.Millisecond).Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "gpu/pod", LogSourceID: "gpu/pod", LogSequence: 1, DownstreamRemoteAddress: "10.0.0.2:1234", Correlation: "probe-id", ResponseCode: 400, ResponseCodeDetails: "internal_redirect", ClusterID: "gpu", RouteName: "first-model", Confidence: "observed"},
+			{ID: "record-1", ObservedAt: now.Add(time.Millisecond).Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "gpu/pod", LogSourceID: "gpu/pod", LogSequence: 1, DownstreamRemoteAddress: "10.0.0.2:1234", Correlation: "probe-id", ResponseCode: 400, ResponseCodeDetails: "internal_redirect", InternalRedirect: true, ClusterID: "gpu", RouteName: "first-model", Confidence: "observed"},
 			{ID: "record-2", ObservedAt: now.Add(time.Millisecond).Format(time.RFC3339Nano), RequestStartTime: now.Format(time.RFC3339Nano), RuntimeSource: "gpu/pod", LogSourceID: "gpu/pod", LogSequence: 2, DownstreamRemoteAddress: "10.0.0.2:1234", Correlation: "probe-id", ResponseCode: 200, ResponseCodeDetails: "via_upstream", ClusterID: "gpu", RouteName: "model", Confidence: "observed"},
-		}, EvidenceComplete: true,
+		},
 	}
 	if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: remoteCommand.ID, ClusterID: "gpu", Probe: &remoteResult}); err != nil {
 		t.Fatal(err)
@@ -556,13 +555,13 @@ func TestStoreProbeCollectsRemoteGatewayWithoutSendingAnotherRequest(t *testing.
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if len(result.probe.Segments) != 2 || len(result.probe.Hops) != 3 || !result.probe.EvidenceComplete {
+	if len(result.probe.Segments) != 2 || len(result.probe.Segments[0].Hops)+len(result.probe.Segments[1].Hops) != 3 {
 		t.Fatalf("probe=%#v", result.probe)
 	}
-	if result.probe.Segments[1].GatewayID != "gpu::gateway/gpu" || result.probe.Segments[1].Evidence != "observed" {
+	if result.probe.Segments[1].GatewayID != "gpu::gateway/gpu" || len(result.probe.Segments[1].Hops) != 2 {
 		t.Fatalf("remote segment=%#v", result.probe.Segments[1])
 	}
-	if result.probe.Segments[1].Collection.State != "settled" || result.probe.RedirectSummary.ObservedRedirects != 1 || result.probe.RedirectSummary.LinkedRedirects != 1 || result.probe.FinalResponseHopID == "" || result.probe.FinalUpstreamHopID != "" {
+	if result.probe.Segments[1].Collection.State != domain.ProbeCollectionStateSettled || len(result.probe.Segments[1].Links) != 1 || result.probe.FinalResponseHopID == "" || result.probe.FinalUpstreamHopID != "" {
 		t.Fatalf("attempt semantics=%+v", result.probe)
 	}
 }
@@ -588,7 +587,7 @@ func TestCompleteFederatedProbeKeepsSourceEvidenceWhenRemoteUnavailable(t *testi
 	execution := domain.ProbeExecution{
 		ID: "probe", TraceID: "trace", SourceCluster: "edge",
 		GatewayID: "edge::gateway/edge", State: "completed", StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Hops: []domain.ObservedHop{{ClusterID: "edge", RouteName: "source", UpstreamHost: "10.0.0.8:80", Confidence: "observed"}},
+		Segments: []domain.ProbeSegment{{GatewayID: "edge::gateway/edge", ClusterID: "edge", Hops: []domain.ObservedHop{{ClusterID: "edge", RouteName: "source", UpstreamHost: "10.0.0.8:80", Confidence: "observed"}}, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled}}},
 	}
 	topology := domain.Topology{
 		Nodes:        []domain.TopologyNode{{ID: execution.GatewayID, ClusterID: "edge", Kind: "Gateway", Name: "edge"}},
@@ -597,10 +596,10 @@ func TestCompleteFederatedProbeKeepsSourceEvidenceWhenRemoteUnavailable(t *testi
 	result := store.completeFederatedProbe(ctx, execution, topology, []probeGatewayTarget{{
 		ClusterID: "gpu", GatewayID: "gateway/gpu", GlobalID: "gpu::gateway/gpu", GatewayName: "gpu",
 	}})
-	if result.State != "completed" || len(result.Segments) != 2 || result.Segments[0].Evidence != "observed" {
+	if result.State != "completed" || len(result.Segments) != 2 || len(result.Segments[0].Hops) != 1 {
 		t.Fatalf("result=%#v", result)
 	}
-	if result.Segments[1].State != "unavailable" || result.EvidenceComplete || len(result.Gaps) != 1 {
+	if result.Segments[1].Collection.State != domain.ProbeCollectionStateCancelled || len(result.Segments[1].Issues) == 0 {
 		t.Fatalf("remote failure was not preserved as a gap: %#v", result)
 	}
 	if result.Segments[1].InferenceConfidence != "high" || result.Segments[1].InferenceBasis == "" {
@@ -622,7 +621,7 @@ func TestCompleteFederatedProbeOmitsGatewaysWithoutMatchingLogs(t *testing.T) {
 	execution := domain.ProbeExecution{
 		ID: "probe", TraceID: "trace", SourceCluster: "edge",
 		GatewayID: "edge::gateway/edge", State: "completed", StartedAt: now.Format(time.RFC3339Nano),
-		Hops: []domain.ObservedHop{{ObservedAt: now.Format(time.RFC3339Nano), ClusterID: "edge", RouteName: "source", Confidence: "observed"}},
+		Segments: []domain.ProbeSegment{{GatewayID: "edge::gateway/edge", ClusterID: "edge", Hops: []domain.ObservedHop{{ObservedAt: now.Format(time.RFC3339Nano), ClusterID: "edge", RouteName: "source", Confidence: "observed"}}, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled}}},
 	}
 	topology := domain.Topology{Nodes: []domain.TopologyNode{{ID: execution.GatewayID, ClusterID: "edge", Kind: "Gateway", Name: "edge"}}}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -639,12 +638,12 @@ func TestCompleteFederatedProbeOmitsGatewaysWithoutMatchingLogs(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("command=%#v ok=%v err=%v", command, ok, err)
 	}
-	empty := domain.ProbeExecution{ID: "probe", TraceID: "trace", SourceCluster: "edge", State: "completed", Gaps: []string{"未找到匹配 gatelens_probe_id 或 trace_id 的网关访问日志"}}
+	empty := domain.ProbeAgentResult{SchemaVersion: domain.ProbeSchemaVersion, ProbeID: command.Probe.ProbeID, TraceID: command.Probe.TraceID, ClusterID: command.ClusterID, GatewayID: command.GatewayID, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateWindowEnded}, Hops: []domain.ObservedHop{}, Issues: []domain.ProbeIssue{{Scope: domain.ProbeIssueScopeCollection, Code: domain.ProbeIssueCodeNoMatchingLog, Message: "no matching log"}}}
 	if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: command.ID, ClusterID: "edge", Probe: &empty}); err != nil {
 		t.Fatal(err)
 	}
 	probe := (<-done).probe
-	if len(probe.Segments) != 1 || len(probe.Gaps) != 0 || !probe.EvidenceComplete {
+	if len(probe.Segments) != 1 || len(probe.Issues) != 0 {
 		t.Fatalf("probe=%#v", probe)
 	}
 }
@@ -660,7 +659,7 @@ func TestCompleteFederatedProbeKeepsInferredGatewayWithoutMatchingLogs(t *testin
 	execution := domain.ProbeExecution{
 		ID: "probe", TraceID: "trace", SourceCluster: "edge",
 		GatewayID: "edge::gateway/edge", State: "completed", StartedAt: now.Format(time.RFC3339Nano),
-		Hops: []domain.ObservedHop{{ObservedAt: now.Format(time.RFC3339Nano), ClusterID: "edge", RouteName: "source", UpstreamHost: "10.233.72.18:8080", Confidence: "observed"}},
+		Segments: []domain.ProbeSegment{{GatewayID: "edge::gateway/edge", ClusterID: "edge", Hops: []domain.ObservedHop{{ObservedAt: now.Format(time.RFC3339Nano), ClusterID: "edge", RouteName: "source", UpstreamHost: "10.233.72.18:8080", Confidence: "observed"}}, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled}}},
 	}
 	topology := domain.Topology{
 		Nodes:        []domain.TopologyNode{{ID: execution.GatewayID, ClusterID: "edge", Kind: "Gateway", Name: "edge"}},
@@ -680,16 +679,82 @@ func TestCompleteFederatedProbeKeepsInferredGatewayWithoutMatchingLogs(t *testin
 	if err != nil || !ok {
 		t.Fatalf("command=%#v ok=%v err=%v", command, ok, err)
 	}
-	empty := domain.ProbeExecution{ID: "probe", TraceID: "trace", SourceCluster: "gpu", State: "completed", LogSource: "gpu-log", Gaps: []string{"未找到匹配 gatelens_probe_id 或 trace_id 的网关访问日志"}}
+	empty := domain.ProbeAgentResult{SchemaVersion: domain.ProbeSchemaVersion, ProbeID: command.Probe.ProbeID, TraceID: command.Probe.TraceID, ClusterID: command.ClusterID, GatewayID: command.GatewayID, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateWindowEnded}, Hops: []domain.ObservedHop{}, Issues: []domain.ProbeIssue{{Scope: domain.ProbeIssueScopeCollection, Code: domain.ProbeIssueCodeNoMatchingLog, Message: "no matching log"}}}
 	if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: command.ID, ClusterID: "gpu", Probe: &empty}); err != nil {
 		t.Fatal(err)
 	}
 	probe := (<-done).probe
-	if len(probe.Segments) != 2 || len(probe.Gaps) != 1 || probe.EvidenceComplete {
+	if len(probe.Segments) != 2 || len(probe.Segments[1].Issues) == 0 {
 		t.Fatalf("probe=%#v", probe)
 	}
 	candidate := probe.Segments[1]
-	if candidate.State != "missing" || candidate.InferenceConfidence != "high" || !strings.Contains(candidate.InferenceBasis, "upstream_host") {
+	if len(candidate.Hops) != 0 || candidate.InferenceConfidence != "high" || !strings.Contains(candidate.InferenceBasis, "upstream_host") {
 		t.Fatalf("candidate=%#v", candidate)
+	}
+}
+
+func TestProbeProtocolFailuresStayAtTheirOwner(t *testing.T) {
+	for _, mode := range []string{"source-version", "source-identity", "remote-version", "remote-http"} {
+		t.Run(mode, func(t *testing.T) {
+			store := NewStore("federation", time.Minute)
+			mustReceive(t, store, domain.AgentSnapshot{Cluster: domain.TopologyCluster{ID: "edge", Snapshot: domain.Snapshot{ID: "s", ObservedAt: time.Now().UTC().Format(time.RFC3339)}}, Context: domain.Context{Cluster: domain.Cluster{ID: "edge"}}, Topology: domain.Topology{Nodes: []domain.TopologyNode{{ID: "gateway", Kind: domain.TopologyNodeKindGateway}, {ID: "remote", Kind: domain.TopologyNodeKindGateway, Conditions: []string{"EnvoyConfig=available"}}}, ProbeEntries: []domain.ProbeEntry{{ID: "entry", GatewayID: "gateway", DNSName: "gateway.ns.svc.cluster.local", Port: 80, Scheme: domain.ProbeSchemeHTTP}}}})
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			done := make(chan domain.ProbeExecution, 1)
+			go func() {
+				probe, err := store.CreateProbe(ctx, domain.ProbeRequest{SourceCluster: "edge", GatewayID: "gateway", EntryID: "entry", Path: "/", Method: domain.ProbeHTTPMethodGET})
+				if err != nil {
+					t.Error(err)
+				}
+				done <- probe
+			}()
+			command, ok, err := store.NextAgentCommand(ctx, "edge")
+			if err != nil || !ok {
+				t.Fatalf("command %v %v", ok, err)
+			}
+			local := domain.ProbeAgentResult{SchemaVersion: domain.ProbeSchemaVersion, ProbeID: command.Probe.ProbeID, TraceID: command.Probe.TraceID, ClusterID: "edge", GatewayID: command.GatewayID, HTTP: &domain.ProbeHTTPResult{Method: command.Probe.Method, ResponseCode: 200}, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled}, Hops: []domain.ObservedHop{{ID: "record", ClusterID: "edge", Confidence: domain.ObservationConfidenceObserved}}}
+			switch mode {
+			case "source-version":
+				local.SchemaVersion = 0
+			case "source-identity":
+				local.GatewayID = "wrong"
+			}
+			if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: command.ID, ClusterID: "edge", Probe: &local}); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(mode, "remote") {
+				remote, ok, err := store.NextAgentCommand(ctx, "edge")
+				if err != nil || !ok {
+					t.Fatal(err)
+				}
+				payload := domain.ProbeAgentResult{SchemaVersion: domain.ProbeSchemaVersion, ProbeID: remote.Probe.ProbeID, TraceID: remote.Probe.TraceID, ClusterID: "edge", GatewayID: remote.GatewayID, Collection: &domain.ProbeCollection{State: domain.ProbeCollectionStateSettled}}
+				if mode == "remote-version" {
+					payload.SchemaVersion = 1
+				} else {
+					payload.HTTP = &domain.ProbeHTTPResult{Method: domain.ProbeHTTPMethodGET, ResponseCode: 503}
+				}
+				if err := store.CompleteAgentCommand(ctx, domain.AgentCommandResult{CommandID: remote.ID, ClusterID: "edge", Probe: &payload}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			result := <-done
+			if strings.HasPrefix(mode, "source") {
+				if result.State != domain.ProbeExecutionStateFailed || result.Error == "" || len(result.Segments) != 0 {
+					t.Fatalf("source invalid %+v", result)
+				}
+			} else {
+				if result.State != domain.ProbeExecutionStateCompleted || result.ResponseCode != 200 || result.Error != "" || len(result.Segments) != 2 {
+					t.Fatalf("remote overwrote source %+v", result)
+				}
+				remote := result.Segments[1]
+				if remote.Collection.State != domain.ProbeCollectionStateReadError || len(remote.Issues) != 1 || remote.Issues[0].Code != domain.ProbeIssueCodeProbeProtocolUnsupported || len(result.Issues) != 0 {
+					t.Fatalf("protocol failure hidden %+v", result)
+				}
+			}
+			saved, ok := store.GetProbe(result.ID)
+			if !ok || saved.State != result.State || saved.SchemaVersion != domain.ProbeSchemaVersion {
+				t.Fatalf("saved %+v", saved)
+			}
+		})
 	}
 }
