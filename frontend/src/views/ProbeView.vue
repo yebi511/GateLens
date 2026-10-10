@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { AlertTriangle, CheckCircle2, Clock3, LoaderCircle, RadioTower, Server, Trash2, Waypoints } from '@lucide/vue'
 import { api } from '../api/client'
-import type { ExtProcObservation, ObservedHop, ProbeExecution, ProbeSegment, ProbeHTTPMethod, Topology, TopologyNode } from '../types'
+import type { ExtProcObservation, ObservedHop, ProbeExecution, ProbeSegment, ProbeHTTPMethod, SnapshotConsistency, Topology, TopologyNode } from '../types'
 import { ProbeHTTPMethodValues } from '../types'
 import { formatCSTDateTime } from '../utils/dateTime'
 import { collectionLabel, displayContexts, finalUpstreamRecord, hasLogValue, probeSegments, probeSummary, probeIssues, recordRoleLabels } from '../utils/probePresentation'
@@ -20,18 +20,28 @@ const loading = ref(false)
 let restoringDraft = false
 const segments = computed<ProbeSegment[]>(() => result.value ? probeSegments(result.value) : [])
 const summary = computed(() => result.value ? probeSummary(result.value) : undefined)
+const snapshotConsistencyDescriptions: Record<SnapshotConsistency, { label: string; description: string }> = {
+  'single-cluster': { label: '单集群', description: '本次探测使用单集群拓扑快照，无需比较跨集群的快照采集时间。' },
+  'waiting-for-agents': { label: '等待 Agent 上报', description: '探测发起时，尚未收到 Agent 上报的拓扑快照。' },
+  'consistent-window': { label: '采集时间差 ≤ 1 分钟', description: '探测发起时，各集群拓扑快照均未过期，最早与最新的快照采集时间相差不超过 1 分钟。' },
+  'remote-unavailable': { label: '部分集群快照已过期', description: '探测发起时，至少一个集群的拓扑快照已超过更新时限，可能无法反映该集群的最新状态。' },
+  'time-skew': { label: '采集时间差 > 1 分钟', description: '探测发起时，各集群拓扑快照均未过期，但最早与最新的采集时间相差超过 1 分钟，可能反映不同时间的拓扑状态。' },
+}
+const snapshotConsistency = computed(() => result.value?.snapshotConsistency
+  ? snapshotConsistencyDescriptions[result.value.snapshotConsistency]
+  : undefined)
 function contexts(segment: ProbeSegment) { return result.value ? displayContexts(segment, result.value) : [] }
 const allIssues = computed(() => result.value ? probeIssues(result.value) : [])
 function segmentIssues(segment: ProbeSegment) { return segment.issues.filter((issue) => !issue.contextID) }
 
 function evidenceLabel(segment: ProbeSegment) {
-  if (segment.hops.length > 0) return 'Observed'
+  if (segment.hops.length > 0) return '已关联日志'
 	if (segment.inferenceConfidence === 'high') return '高置信候选'
 	if (segment.inferenceConfidence === 'medium') return '中置信候选'
 	if (segment.inferenceConfidence === 'low') return '配置候选'
 	if (segment.inferenceConfidence === 'ambiguous') return '歧义候选'
-  if (segment.collection.state === 'read-error' || segment.collection.state === 'cancelled') return 'Missing'
-  return 'Inferred'
+  if (segment.collection.state === 'read-error' || segment.collection.state === 'cancelled') return '证据缺失'
+  return '推断'
 }
 
 function segmentTitle(segment: ProbeSegment) {
@@ -344,13 +354,13 @@ async function submit() {
             <div><p class="eyebrow">{{ summary?.processState === 'observed' ? '已关联网关日志' : '网关日志存在证据缺口' }}</p><h2>{{ summary?.requestLabel }}</h2><p>{{ formatCSTDateTime(result.completedAt || result.startedAt) }} · Agent 实测总耗时 {{ result.durationMillis }} ms</p><p>{{ summary?.observedGateways }} 个已观测网关 · {{ summary?.recordCount }} 条访问记录<template v-if="summary?.candidateGateways"> · {{ summary.candidateGateways }} 个候选网关</template></p><span v-if="summary?.redirects" class="redirect-badge"><AlertTriangle :size="13" aria-hidden="true" />发生内部重定向 · {{ summary.redirects }} 次已观测</span><p class="probe-process-state">{{ summary?.processLabel }}</p></div>
             <CheckCircle2 v-if="summary?.successful" :size="24" aria-hidden="true" /><AlertTriangle v-else :size="24" aria-hidden="true" />
           </header>
-          <div class="probe-identifiers"><code>probe {{ result.id }}</code><code>trace {{ result.traceID }}</code><span v-if="result.snapshotConsistency" class="snapshot-consistency" :class="`is-${result.snapshotConsistency}`">{{ result.snapshotConsistency }}</span></div>
+          <div class="probe-identifiers"><code>probe {{ result.id }}</code><code>trace {{ result.traceID }}</code><span v-if="snapshotConsistency" class="snapshot-consistency" :class="`is-${result.snapshotConsistency}`" :title="snapshotConsistency.description">拓扑快照：{{ snapshotConsistency.label }}</span><p v-if="snapshotConsistency" class="snapshot-consistency-description">{{ snapshotConsistency.description }}</p></div>
           <div class="observed-path">
-            <article class="observed-hop source-hop"><span><RadioTower :size="17" /></span><div><strong>{{ result.sourceCluster }}</strong><p>{{ result.method }} {{ result.target }}</p></div><em>Probe</em></article>
+            <article class="observed-hop source-hop"><span><RadioTower :size="17" /></span><div><strong>{{ result.sourceCluster }}</strong><p>{{ result.method }} {{ result.target }}</p></div></article>
             <section v-for="segment in segments" :key="segment.gatewayID" class="probe-segment" :class="`segment-${segment.hops.length ? 'observed' : 'missing'}`">
               <header class="segment-header">
                 <span><Waypoints :size="17" /></span>
-                <div><strong>{{ segmentTitle(segment) }} · {{ segment.gatewayName || segment.gatewayID }}</strong><p>{{ segment.clusterID }}<template v-if="segment.snapshotID"> · {{ segment.snapshotID }}</template><template v-if="segment.snapshotObservedAt"> · {{ formatCSTDateTime(segment.snapshotObservedAt) }}</template></p><small v-if="gatewaySnapshotNode(segment)" class="segment-gateway-snapshot" :class="`text-${gatewaySnapshotNode(segment)?.status}`">网关快照 · {{ gatewaySnapshotNode(segment)?.namespace }}/{{ gatewaySnapshotNode(segment)?.name }} · {{ gatewaySnapshotNode(segment)?.statusText }}</small></div>
+                <div><strong>{{ segmentTitle(segment) }} · {{ segment.gatewayName || segment.gatewayID }}</strong><p>{{ segment.clusterID }}<template v-if="segment.snapshotObservedAt"> · {{ formatCSTDateTime(segment.snapshotObservedAt) }}</template></p><small v-if="gatewaySnapshotNode(segment)" class="segment-gateway-snapshot" :class="`text-${gatewaySnapshotNode(segment)?.status}`">网关快照 · {{ gatewaySnapshotNode(segment)?.namespace }}/{{ gatewaySnapshotNode(segment)?.name }} · {{ gatewaySnapshotNode(segment)?.statusText }}</small></div>
 				<em :class="`evidence-${segment.hops.length > 0 ? 'observed' : segment.inferenceBasis ? 'inferred' : 'missing'}`">{{ evidenceLabel(segment) }}</em>
               </header>
               <div v-if="segment.transport || segment.destination" class="transit-boundary"><span>{{ segment.transport || '跨集群' }}</span><code>{{ segment.destination || '远端入口' }}</code></div>

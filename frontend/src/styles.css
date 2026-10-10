@@ -357,8 +357,9 @@ tbody tr:hover { background: #f8fbfa; }
 }
 .probe-identifiers { display: flex; flex-wrap: wrap; gap: 7px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: #fbfcfc; }
 .probe-identifiers code { min-width: 0; overflow-wrap: anywhere; color: #426763; font-size: 9px; }
-.snapshot-consistency { margin-left: auto; padding: 3px 6px; border-radius: 3px; color: #45605d; background: #edf2f1; font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.snapshot-consistency { margin-left: auto; padding: 3px 6px; border-radius: 3px; color: #45605d; background: #edf2f1; font-size: 11px; font-weight: 700; }
 .snapshot-consistency.is-time-skew, .snapshot-consistency.is-remote-unavailable { color: #884d2f; background: #fff0e5; }
+.snapshot-consistency-description { flex-basis: 100%; margin: 0; color: #45605d; font-size: 11px; line-height: 1.6; }
 .observed-path { display: grid; gap: 0; padding: 16px; }
 .observed-hop { position: relative; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: 9px; align-items: start; padding: 11px 0; }
 .observed-hop:not(:last-child)::after { content: ''; position: absolute; top: 39px; bottom: -6px; left: 14px; border-left: 1px solid #9cbdb7; }

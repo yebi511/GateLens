@@ -26,7 +26,7 @@ spec:
     accessLogFile: /dev/stdout
     accessLogEncoding: TEXT
     accessLogFormat: |
-      {"gatelens_probe_id":"%REQ(X-GATELENS-PROBE-ID)%","trace_id":"%REQ(X-B3-TRACEID)%","start_time":"%START_TIME%","method":"%REQ(:METHOD)%","authority":"%REQ(:AUTHORITY)%","path":"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%","route_name":"%ROUTE_NAME%","upstream_cluster":"%UPSTREAM_CLUSTER%","upstream_host":"%UPSTREAM_HOST%","upstream_service_time":"%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)%","response_code":"%RESPONSE_CODE%","response_flags":"%RESPONSE_FLAGS%","response_code_details":"%RESPONSE_CODE_DETAILS%","upstream_transport_failure_reason":"%UPSTREAM_TRANSPORT_FAILURE_REASON%","duration":"%DURATION%","ai_log":"%FILTER_STATE(wasm.ai_log:PLAIN)%","ext_proc_bbr":"%FILTER_STATE(gatelens.filters.http.ext_proc.bbr:TYPED)%","ext_proc_epp":"%FILTER_STATE(envoy.filters.http.ext_proc:TYPED)%"}
+      {"gatelens_probe_id":"%REQ(X-GATELENS-PROBE-ID)%","trace_id":"%REQ(X-B3-TRACEID)%","start_time":"%START_TIME%","downstream_remote_address":"%DOWNSTREAM_REMOTE_ADDRESS%","method":"%REQ(:METHOD)%","authority":"%REQ(:AUTHORITY)%","path":"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%","route_name":"%ROUTE_NAME%","upstream_cluster":"%UPSTREAM_CLUSTER%","upstream_host":"%UPSTREAM_HOST%","upstream_service_time":"%RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)%","response_code":"%RESPONSE_CODE%","response_flags":"%RESPONSE_FLAGS%","response_code_details":"%RESPONSE_CODE_DETAILS%","upstream_transport_failure_reason":"%UPSTREAM_TRANSPORT_FAILURE_REASON%","duration":"%DURATION%","ai_log":"%FILTER_STATE(wasm.ai_log:PLAIN)%","ext_proc_bbr":"%FILTER_STATE(gatelens.filters.http.ext_proc.bbr:TYPED)%","ext_proc_epp":"%FILTER_STATE(envoy.filters.http.ext_proc:TYPED)%"}
 ```
 
 这里继续使用 `TEXT`，是因为 Higress 的 `accessLogFormat` 本身是一行完整 JSON。
@@ -55,6 +55,7 @@ Agent 使用 stdout/stderr 时需要以下只读权限：
   "gatelens_probe_id": "%REQ(X-GATELENS-PROBE-ID)%",
   "trace_id": "%REQ(X-B3-TRACEID)%",
   "start_time": "%START_TIME%",
+  "downstream_remote_address": "%DOWNSTREAM_REMOTE_ADDRESS%",
   "method": "%REQ(:METHOD)%",
   "authority": "%REQ(:AUTHORITY)%",
   "path": "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%",
@@ -75,6 +76,35 @@ Agent 使用 stdout/stderr 时需要以下只读权限：
 GateLens 使用 `gatelens_probe_id` 作为主关联键，只在该字段为空时才以 `trace_id`
 兜底。网关链路上的插件和 Header 重写规则不能删除
 `x-gatelens-probe-id`/B3 trace header。
+
+#### 1.2.1 Istio Telemetry provider 中追加字段
+
+仓库的 `deploy/telemetry.yaml` 引用 `gatelens-envoy` provider，日志格式在 Istio 的
+`meshConfig.extensionProviders` 中定义，不在 `Telemetry.spec.accessLogging` 中定义。
+在现有同名 provider 的 `envoyFileAccessLog.logFormat.labels` 中追加：
+
+```yaml
+meshConfig:
+  extensionProviders:
+    - name: gatelens-envoy
+      envoyFileAccessLog:
+        path: /dev/stdout
+        logFormat:
+          labels:
+            # 保留现有日志字段，在此追加
+            downstream_remote_address: "%DOWNSTREAM_REMOTE_ADDRESS%"
+```
+
+这是配置位置示意，须合并进现有 provider，保留其他字段和其他 provider。
+如果该 provider 使用 `logFormat.text` 输出单行 JSON，则在原 JSON 对象中追加
+`"downstream_remote_address":"%DOWNSTREAM_REMOTE_ADDRESS%"`；`text` 与 `labels`
+不能同时设置。通过 Helm 管理 Istio 时应修改对应 values 源配置。
+
+该值包含下游地址和端口，例如 `10.0.0.1:52068`。它可能受 X-Forwarded-For
+信任配置或 PROXY protocol 影响；需要直接连接对端地址时使用
+`%DOWNSTREAM_DIRECT_REMOTE_ADDRESS%`。
+GateLens 已支持解析 `downstream_remote_address`，无需修改解析代码。
+应用源配置后，发起一次经过目标网关的请求，检查新访问日志是否包含该字段。
 
 ### 1.3 增加 BBR/EPP Filter State
 
